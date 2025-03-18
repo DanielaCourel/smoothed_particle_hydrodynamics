@@ -5,7 +5,7 @@
 #include "particle.h"
 
 // Qt
-#include <QTime>
+#include <QElapsedTimer>
 
 // cmath
 #include <math.h>
@@ -13,6 +13,7 @@
 // openmp
 #include <omp.h>
 
+#include <QDateTime>
 
 
 /*
@@ -430,7 +431,7 @@ SPH::SPH()
    mHScaled2 = pow(h * mSimulationScale, 2);
    mHScaled6 = pow(h * mSimulationScale, 6);
    mHScaled9 = pow(h * mSimulationScale, 9);
-   mParticleCount = 64 * 1024;
+   mParticleCount = 32 * 1024;
    mGridCellsX = 32;
    mGridCellsY = 32;
    mGridCellsZ = 32;
@@ -439,6 +440,7 @@ SPH::SPH()
    mMaxX = mCellSize * mGridCellsX;
    mMaxY = mCellSize * mGridCellsY;
    mMaxZ = mCellSize * mGridCellsZ;
+   totalSteps = 10;
 
    // physics
    mRho0 = 1000.0f;
@@ -513,11 +515,13 @@ bool SPH::isPaused() const
 
 void SPH::run()
 {
-   while(!isStopped())
+   int stepCount = 0;
+   while(!isStopped() && stepCount <= totalSteps)
    {
       if (!isPaused())
       {
          step();
+         stepCount++;
       }
    }
 }
@@ -531,16 +535,16 @@ void SPH::step()
    int timeComputePressure = 0;
    int timeComputeAcceleration = 0;
    int timeIntegrate = 0;
-   QTime t;
+   QElapsedTimer t;
 
    // put particles into voxel grid
    t.start();
    voxelizeParticles();
-   timeVoxelize = t.elapsed();
+   timeVoxelize = t.nsecsElapsed() / 1000000;
 
    // find neighboring particles
-   t.restart();
-   #pragma omp parallel for
+   t.start();
+   // #pragma omp parallel for
    for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
    {
       Particle* particle = &mSrcParticles[particleIndex];
@@ -554,15 +558,15 @@ void SPH::step()
       //    -> create a neighbor map based on the analaysis
       findNeighbors(particle, particleIndex, neighbors, voxel.x, voxel.y, voxel.z);
    }
-   timeFindNeighbors = t.elapsed();
+   timeFindNeighbors = t.nsecsElapsed() / 1000000;
 
    // compute density
    //    we only compute interactions with 32 particles.
    //    this number is somewhat arbitrary, 8 or 16 would work, too but
    //    it might not look too convincing.
    //    -> compute the interaction and the physics (with these 32 particles)
-   t.restart();
-   #pragma omp parallel for
+   t.start();
+   // #pragma omp parallel for
    for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
    {
       Particle* particle = &mSrcParticles[particleIndex];
@@ -573,22 +577,22 @@ void SPH::step()
 
       computeDensity(particle, neighbors, neighborDistances);
    }
-   timeComputeDensity = t.elapsed();
+   timeComputeDensity = t.nsecsElapsed() / 1000000;
 
    // compute pressure
-   t.restart();
-   #pragma omp parallel for
+   t.start();
+   // #pragma omp parallel for
    for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
    {
       Particle* particle = &mSrcParticles[particleIndex];
 
       computePressure(particle);
    }
-   timeComputePressure = t.elapsed();
+   timeComputePressure = t.nsecsElapsed() / 1000000;
 
    // compute acceleration
-   t.restart();
-   #pragma omp parallel for
+   t.start();
+   // #pragma omp parallel for
    for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
    {
       Particle* particle = &mSrcParticles[particleIndex];
@@ -599,18 +603,18 @@ void SPH::step()
 
       computeAcceleration(particle, neighbors, neighborDistances);
    }
-   timeComputeAcceleration = t.elapsed();
+   timeComputeAcceleration = t.nsecsElapsed() / 1000000;
 
    // integrate
-   t.restart();
-   #pragma omp parallel for
+   t.start();
+   // #pragma omp parallel for
    for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
    {
       Particle* particle = &mSrcParticles[particleIndex];
 
       integrate(particle);
    }
-   timeIntegrate = t.elapsed();
+   timeIntegrate = t.nsecsElapsed() / 1000000;
 
    emit updateElapsed(
       timeVoxelize,
@@ -644,13 +648,13 @@ void SPH::stopSimulation()
 
 void SPH::initParticlePositionsRandom()
 {
-   qsrand(QTime::currentTime().msec());
+   srand(QDateTime::currentMSecsSinceEpoch() % 1000);
 
    for (int i = 0; i < mParticleCount; i++)
    {
-      float x = qrand() / (float)RAND_MAX;
-      float y = qrand() / (float)RAND_MAX;
-      float z = qrand() / (float)RAND_MAX;
+      float x = rand() / (float)RAND_MAX;
+      float y = rand() / (float)RAND_MAX;
+      float z = rand() / (float)RAND_MAX;
 
       x *= mGridCellsX * mHTimes2 * 0.1f;
       y *= mGridCellsY * mHTimes2 * 0.75f;
@@ -669,10 +673,11 @@ void SPH::initParticlePositionsRandom()
    // just set up random directions
    for (int i = 0; i < mParticleCount; i++)
    {
+      
       // have a range from -1 to 1
-      float x = ((qrand() / (float)RAND_MAX) * 2.0f) - 1.0f;
-      float y = ((qrand() / (float)RAND_MAX) * 2.0f) - 1.0f;
-      float z = ((qrand() / (float)RAND_MAX) * 2.0f) - 1.0f;
+      float x = ((rand() / (float)RAND_MAX) * 2.0f) - 1.0f;
+      float y = ((rand() / (float)RAND_MAX) * 2.0f) - 1.0f;
+      float z = ((rand() / (float)RAND_MAX) * 2.0f) - 1.0f;
 
       mSrcParticles[i].mVelocity.set(x, y, z);
    }
@@ -681,7 +686,7 @@ void SPH::initParticlePositionsRandom()
 
 void SPH::initParticlePolitionsSphere()
 {
-   qsrand(QTime::currentTime().msec());
+   srand(QDateTime::currentMSecsSinceEpoch() % 1000);
 
    float dist = 0.0f;
 
@@ -704,9 +709,9 @@ void SPH::initParticlePolitionsSphere()
    {
       do
       {
-         x = qrand() / (float)RAND_MAX;
-         y = qrand() / (float)RAND_MAX;
-         z = qrand() / (float)RAND_MAX;
+         x = rand() / (float)RAND_MAX;
+         y = rand() / (float)RAND_MAX;
+         z = rand() / (float)RAND_MAX;
 
          x *= mGridCellsX * mHTimes2;
          y *= mGridCellsY * mHTimes2;
@@ -732,9 +737,9 @@ void SPH::initParticlePolitionsSphere()
    {
       do
       {
-         x = qrand() / (float)RAND_MAX;
-         y = qrand() / (float)RAND_MAX;
-         z = qrand() / (float)RAND_MAX;
+         x = rand() / (float)RAND_MAX;
+         y = rand() / (float)RAND_MAX;
+         z = rand() / (float)RAND_MAX;
 
          x *= mGridCellsX * mHTimes2;
          y *= mGridCellsY * mHTimes2;
@@ -774,7 +779,7 @@ void SPH::voxelizeParticles()
 
    clearGrid();
 
-   #pragma omp parallel for
+   // #pragma omp parallel for
    for (int i = 0; i < mParticleCount; i++)
    {
       Particle* particle = &mSrcParticles[i];
@@ -986,7 +991,7 @@ void SPH::findNeighbors(Particle* particle, int particleIndex, Particle** neighb
 
             // TODO: that's neither fast no a good idea
             //       if there's only 1 particle nearby, the code below is pretty pointless
-            particleOffset = qrand() % voxel.length();
+            particleOffset = rand() % voxel.length();
             particleIterateDirection = (particleIndex % 2) ? -1 : 1;
 
             int i = 0;
@@ -1102,6 +1107,7 @@ void SPH::computeDensity(Particle* particle, Particle** neighbors, float* neighb
          mass = neighbor->mMass;
 
          // apply smoothing kernel to mass
+         
          vec3 dist = pos - neighbor->mPosition;
          float dot = dist.x * dist.x + dist.y * dist.y + dist.z * dist.z;
          float distance = sqrt(dot);
@@ -1323,6 +1329,7 @@ void SPH::computeAcceleration(Particle* p, Particle** neighbors, float* neighbor
    acceleration = viscousTerm - pressureGradient;
 
    // check CFL condition
+   
    float dot =
         acceleration.x * acceleration.x
       + acceleration.y * acceleration.y
@@ -1476,6 +1483,7 @@ void SPH::applyBoundary(
    vec3* newVelocity
 )
 {
+   
    vec3 intersection = position + (*newVelocity * intersectionDistance);
 
    float dotProduct =

@@ -19,6 +19,14 @@ int main(int argc, char *argv[])
 
    SPH sph;
 
+   // run simulation whitout visualization
+   if (argc > 1 && std::string(argv[1]) == "r") 
+   {
+      sph.start();
+      sph.wait();
+      return 0;
+   }
+
    Widget w;
    w.getVisualization()->setSph(&sph);
    w.show();
@@ -37,7 +45,7 @@ int main(int argc, char *argv[])
    );
 
    sph.start();
-   sph.pauseResume();
+   // sph.pauseResume();
 
    a.connect(
       &w,

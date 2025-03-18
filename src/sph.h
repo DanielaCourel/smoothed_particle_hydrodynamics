@@ -173,6 +173,8 @@ protected:
       Particle** mNeighbors;
       float* mNeighborDistancesScaled;
 
+      int totalSteps;
+
       // physics
       float mRho0;
       float mStiffness;

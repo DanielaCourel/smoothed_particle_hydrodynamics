@@ -6,6 +6,7 @@
 
 // Qt
 #include <QTimer>
+#include <QElapsedTimer>
 
 // sph
 #include "particle.h"
@@ -30,7 +31,7 @@ Visualization::Visualization(QWidget *parent) :
    );
 
    timer->start(16);
-   mElapsed.start();
+   QElapsedTimer mElapsed;
 }
 
 
@@ -137,7 +138,7 @@ void Visualization::drawParticles()
 {
    glBlendFunc(GL_ONE, GL_ONE);
 
-   QTime elapsed;
+   QElapsedTimer elapsed;
    elapsed.start();
 
    int count = mSph->getParticleCount();
@@ -157,7 +158,7 @@ void Visualization::drawParticles()
 
    glEnd();
 
-   emit updateElapsed(elapsed.elapsed());
+   emit updateElapsed(elapsed.nsecsElapsed() / 1000000);
 }
 
 
