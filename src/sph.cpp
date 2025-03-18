@@ -442,11 +442,11 @@ SPH::SPH()
 
    // physics
    mRho0 = 1000.0f;
-   mStiffness = 0.75f;
-   mGravity = vec3(0.0f, -9.8f, 0.0f);
-   mViscosityScalar = 10.0f;
-   mTimeStep = 0.0042f;
-   mDamping = 0.75f;
+   mStiffness = 0.01f;  // OG = 0.75
+   mGravity = vec3(0.0f, 0.0f, 0.0f);  // OG = g_y = -9.8
+   mViscosityScalar = 1.0f;  // OG = 10.
+   mTimeStep = 0.004f;  // OG = 4.2e-3
+   mDamping = 0.99f;  // OG = 0.72
 
    // float x = (1000.0f / (float)mParticleCount) * 2.0f;
    // printf("%f\n", x);
@@ -696,7 +696,9 @@ void SPH::initParticlePolitionsSphere()
       mMaxZ * 0.5f
    );
 
-   float radius = 25.0f;
+   float radius = 40.0f;  // Changed the size of the initial distrib. (OG = 25.)
+   float phi;  // El ang acimutal para la v_tangencial. (atan2(y,x))
+   float v_x_inic, v_z_inic;  // El hdp puso a y como la comp vertical...
 
    int a = mParticleCount * 0.95f;
 
@@ -724,7 +726,14 @@ void SPH::initParticlePolitionsSphere()
       while (dist > radius);
 
       mSrcParticles[i].mPosition.set(x, y, z);
-      mSrcParticles[i].mVelocity.set(0, 0, 0);
+      //mSrcParticles[i].mVelocity.set(0, 0, 0);
+      // Esto hace que partan del reposo. Estaria bueno
+      // que arranquen con un poquito de momento angular...
+      // e.g. v_rot = (r - r_0) * [x*-sin(phi) + y*cos(phi)] (d_phi 3D)
+      phi = atan2(z - mMaxZ * 0.5f, x - mMaxX * 0.5f);  // Acomodar por el centro de la esfera!
+      v_x_inic = 0.1 * dist * -sin(phi);  // L ~ r (!)
+      v_z_inic = 0.1 * dist * cos(phi);
+      mSrcParticles[i].mVelocity.set(v_x_inic, 0.0f, v_z_inic);
    }
 
    // ground
@@ -1321,6 +1330,35 @@ void SPH::computeAcceleration(Particle* p, Particle** neighbors, float* neighbor
    // potential optimization:
    // multiplication with rhoiInv could be done here in just one go
    acceleration = viscousTerm - pressureGradient;
+
+   // New vecs (grav):
+   vec3 gravityTerm(0.0f, 0.0f, 0.0f);
+   vec3 gravityTermContribution;
+   /* Necesito masa y la constante de gravitacion G (!!)
+   Don't forget about the softening!!!
+   OG es ~10^-11, pero quiero efectos aumentados
+   para ver como funca (2 blobs de agua no sienten atraccion grav en la Tierra...)
+   cada orden de mag => aumentar la masa de estos blobs. Be careful con la
+   implementacion fisica de estos valores y la divergencia de la velocidad con un Euler
+   basico... */
+   float G_constant = 6.7e+1;
+   float softening = mHScaled * 0.5;
+   float distance_ij3;  // Needed...
+   // LASTLY: add a point-mass accel @ the center (e.g. central Black-Hole/NSC)
+   // *once per particle. acc = -G M /r^3 (r^, porque apunta al centro)
+   float central_mass = 100.0f;  // Who knows... Tenemos que acomodar las unidades.
+   vec3 r_cetral_mass(mMaxX * 0.5f,
+                     mMaxY * 0.5f,
+                     mMaxZ * 0.5f);  // La posicion del BH (idem visualizacion)
+   rMinusRj = (r - r_cetral_mass);
+   rMinusRjScaled = rMinusRj * mSimulationScale;
+   distance_ij3 = pow((rMinusRjScaled.length() + softening), 3);
+   gravityTermContribution = rMinusRjScaled/distance_ij3;
+   gravityTermContribution *= -G_constant * central_mass;
+   gravityTerm += gravityTermContribution;  // Try it...
+
+   // Updateo la gravedad:
+   acceleration += gravityTerm;
 
    // check CFL condition
    float dot =

@@ -55,7 +55,7 @@ void Visualization::initializeGL()
    glEnable(GL_LINE_SMOOTH);
    glHint(GL_LINE_SMOOTH_HINT, GL_NICEST);
 
-   glPointSize(0.5f);
+   glPointSize(0.9f);
 
 }
 
@@ -145,7 +145,8 @@ void Visualization::drawParticles()
 
    glBegin(GL_POINTS);
 
-   glColor4f(0.0f, 0.2f, 0.8f, 1.0f);
+   // Color by density?
+   glColor4f(0.5f, 0.5f, 0.5f, 0.5f);
 
    for (int i = 0; i < count; i++)
    {
@@ -158,6 +159,7 @@ void Visualization::drawParticles()
    glEnd();
 
    emit updateElapsed(elapsed.elapsed());
+   // We should save this time
 }
 
 
