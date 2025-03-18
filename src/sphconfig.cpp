@@ -38,7 +38,7 @@ SphConfig::SphConfig(QWidget* parent)
 
    //NEW: grav and dens0 on-the-fly:
    mGravConstant = new QTreeWidgetItem((QTreeWidget*)0, QStringList("G_constant"));
-   //mRho0 = new QTreeWidgetItem((QTreeWidget*)0, QStringList("target_rho_0"));
+   mRho0 = new QTreeWidgetItem((QTreeWidget*)0, QStringList("target_rho_0"));
 
    items << mGravityX;
    items << mGravityY;
@@ -50,7 +50,7 @@ SphConfig::SphConfig(QWidget* parent)
    items << mCflLimit;
    // New
    items << mGravConstant;
-   //items << mRho0;
+   items << mRho0;
 
    for (int i = 0; i < items.size(); i++)
       items[i]->setFlags(mGravityX->flags() | Qt::ItemIsEditable);
@@ -70,7 +70,7 @@ void SphConfig::readValuesFromSimulation()
    float cfl = mSph->getCflLimit();
    // New
    float grav_constant = mSph->getGravConstant();
-   //float rho_target = mSph->getTargetDensity();
+   float rho_target = mSph->getTargetDensity();
 
    mGravityX->setText(1, QString::number(gravity.x, 'f'));
    mGravityY->setText(1, QString::number(gravity.y, 'f'));
@@ -82,7 +82,7 @@ void SphConfig::readValuesFromSimulation()
    mCflLimit->setText(1, QString::number(cfl, 'f'));
    // New:
    mGravConstant->setText(1, QString::number(grav_constant, 'f'));
-   //mRho0->setText(1, QString::number(rho_target, 'f'));
+   mRho0->setText(1, QString::number(rho_target, 'f'));
 }
 
 
@@ -100,7 +100,7 @@ void SphConfig::writeValuesToSimulation()
    float cfl = mCflLimit->text(1).toFloat();
    // New:
    float grav_constant = mGravConstant->text(1).toFloat();
-   //float rho_target = mRho0->text(1).toFloat();
+   float rho_target = mRho0->text(1).toFloat();
 
    mSph->setGravity(gravity);
    mSph->setStiffness(stiffness);
@@ -110,7 +110,7 @@ void SphConfig::writeValuesToSimulation()
    mSph->setCflLimit(cfl);
    // New:
    mSph->setGravConstant(grav_constant);
-   //mSph->setTargetDensity(rho_target);
+   mSph->setTargetDensity(rho_target);
 }
 
 

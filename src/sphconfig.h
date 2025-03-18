@@ -44,7 +44,7 @@ protected:
 
    // Quiero añadir para modificar la densidad del fluido y G:
    QTreeWidgetItem* mGravConstant;
-   QTreeWidgetItem* mTargetDensity;
+   QTreeWidgetItem* mRho0;
 
    SPH* mSph;
 };
