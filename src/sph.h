@@ -60,6 +60,13 @@ Q_OBJECT
       float getCflLimit() const;
       void setCflLimit(float cflLimit);
 
+      // Quiero añadir para modificar la densidad del fluido y G:
+      float getGravConstant() const;
+      void setGravConstant(float grav_constant);
+
+      float getTargetDensity() const;
+      void setTargetDensity(float rho_target);
+
 
 public slots:
 
@@ -187,6 +194,8 @@ protected:
       float mDamping;
       float mCflLimit;
       float mCflLimit2;
+      // Gravity constant:
+      float mGravConstant;
 
       // thread handling
       mutable QMutex mMutex;

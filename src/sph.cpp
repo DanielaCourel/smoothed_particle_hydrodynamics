@@ -447,6 +447,8 @@ SPH::SPH()
    mViscosityScalar = 1.0f;  // OG = 10.
    mTimeStep = 0.004f;  // OG = 4.2e-3
    mDamping = 0.99f;  // OG = 0.72
+   // Gravity:
+   mGravConstant = 6.67f;
 
    // float x = (1000.0f / (float)mParticleCount) * 2.0f;
    // printf("%f\n", x);
@@ -692,7 +694,7 @@ void SPH::initParticlePolitionsSphere()
    vec3 sphereCenter;
    sphereCenter.set(
       mMaxX * 0.5f,
-      mMaxY * 0.9f,
+      mMaxY * 0.5f,
       mMaxZ * 0.5f
    );
 
@@ -1341,7 +1343,7 @@ void SPH::computeAcceleration(Particle* p, Particle** neighbors, float* neighbor
    cada orden de mag => aumentar la masa de estos blobs. Be careful con la
    implementacion fisica de estos valores y la divergencia de la velocidad con un Euler
    basico... */
-   float G_constant = 6.7e+1;
+   //float G_constant = 6.7e+1;  // def como mGravConstant
    float softening = mHScaled * 0.5;
    float distance_ij3;  // Needed...
    // LASTLY: add a point-mass accel @ the center (e.g. central Black-Hole/NSC)
@@ -1354,7 +1356,7 @@ void SPH::computeAcceleration(Particle* p, Particle** neighbors, float* neighbor
    rMinusRjScaled = rMinusRj * mSimulationScale;
    distance_ij3 = pow((rMinusRjScaled.length() + softening), 3);
    gravityTermContribution = rMinusRjScaled/distance_ij3;
-   gravityTermContribution *= -G_constant * central_mass;
+   gravityTermContribution *= -mGravConstant * central_mass;
    gravityTerm += gravityTermContribution;  // Try it...
 
    // Updateo la gravedad:
@@ -1669,5 +1671,29 @@ float SPH::getStiffness() const
 void SPH::setStiffness(float stiffness)
 {
    mStiffness = stiffness;
+}
+
+// Set & get grav and dens (to mod on the fly):
+float SPH::getGravConstant() const
+{
+   return mGravConstant;
+}
+
+
+void SPH::setGravConstant(float grav_constant)
+{
+   mGravConstant = grav_constant;
+}
+
+
+float SPH::getTargetDensity() const
+{
+   return mRho0;
+}
+
+
+void SPH::setTargetDensity(float rho_target)
+{
+   mRho0 = rho_target;
 }
 

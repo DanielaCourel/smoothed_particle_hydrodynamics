@@ -36,6 +36,10 @@ SphConfig::SphConfig(QWidget* parent)
    mTimeStep = new QTreeWidgetItem((QTreeWidget*)0, QStringList("timestep"));
    mCflLimit = new QTreeWidgetItem((QTreeWidget*)0, QStringList("cfl"));
 
+   //NEW: grav and dens0 on-the-fly:
+   mGravConstant = new QTreeWidgetItem((QTreeWidget*)0, QStringList("G_constant"));
+   //mRho0 = new QTreeWidgetItem((QTreeWidget*)0, QStringList("target_rho_0"));
+
    items << mGravityX;
    items << mGravityY;
    items << mGravityZ;
@@ -44,6 +48,9 @@ SphConfig::SphConfig(QWidget* parent)
    items << mDamping;
    items << mTimeStep;
    items << mCflLimit;
+   // New
+   items << mGravConstant;
+   //items << mRho0;
 
    for (int i = 0; i < items.size(); i++)
       items[i]->setFlags(mGravityX->flags() | Qt::ItemIsEditable);
@@ -61,6 +68,9 @@ void SphConfig::readValuesFromSimulation()
    float damping = mSph->getDamping();
    float timeStep = mSph->getTimeStep();
    float cfl = mSph->getCflLimit();
+   // New
+   float grav_constant = mSph->getGravConstant();
+   //float rho_target = mSph->getTargetDensity();
 
    mGravityX->setText(1, QString::number(gravity.x, 'f'));
    mGravityY->setText(1, QString::number(gravity.y, 'f'));
@@ -70,6 +80,9 @@ void SphConfig::readValuesFromSimulation()
    mDamping->setText(1, QString::number(damping, 'f'));
    mTimeStep->setText(1, QString::number(timeStep, 'f'));
    mCflLimit->setText(1, QString::number(cfl, 'f'));
+   // New:
+   mGravConstant->setText(1, QString::number(grav_constant, 'f'));
+   //mRho0->setText(1, QString::number(rho_target, 'f'));
 }
 
 
@@ -85,6 +98,9 @@ void SphConfig::writeValuesToSimulation()
    float damping = mDamping->text(1).toFloat();
    float timestep = mTimeStep->text(1).toFloat();
    float cfl = mCflLimit->text(1).toFloat();
+   // New:
+   float grav_constant = mGravConstant->text(1).toFloat();
+   //float rho_target = mRho0->text(1).toFloat();
 
    mSph->setGravity(gravity);
    mSph->setStiffness(stiffness);
@@ -92,6 +108,9 @@ void SphConfig::writeValuesToSimulation()
    mSph->setDamping(damping);
    mSph->setTimeStep(timestep);
    mSph->setCflLimit(cfl);
+   // New:
+   mSph->setGravConstant(grav_constant);
+   //mSph->setTargetDensity(rho_target);
 }
 
 

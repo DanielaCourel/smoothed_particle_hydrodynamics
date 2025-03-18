@@ -42,6 +42,10 @@ protected:
    QTreeWidgetItem* mTimeStep;
    QTreeWidgetItem* mCflLimit;
 
+   // Quiero añadir para modificar la densidad del fluido y G:
+   QTreeWidgetItem* mGravConstant;
+   QTreeWidgetItem* mTargetDensity;
+
    SPH* mSph;
 };
 
