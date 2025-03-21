@@ -15,6 +15,9 @@
 
 #include <QDateTime>
 
+// write
+#include <iostream>
+
 
 /*
 
@@ -431,7 +434,7 @@ SPH::SPH()
    mHScaled2 = pow(h * mSimulationScale, 2);
    mHScaled6 = pow(h * mSimulationScale, 6);
    mHScaled9 = pow(h * mSimulationScale, 9);
-   mParticleCount = 32 * 1024;
+   mParticleCount = 16 * 1024;
    mGridCellsX = 32;
    mGridCellsY = 32;
    mGridCellsZ = 32;
@@ -440,19 +443,19 @@ SPH::SPH()
    mMaxX = mCellSize * mGridCellsX;
    mMaxY = mCellSize * mGridCellsY;
    mMaxZ = mCellSize * mGridCellsZ;
-   totalSteps = 10;
+   totalSteps = 1000;
 
    // physics
-   mRho0 = 1000.0f;
-   mStiffness = 0.75f;
-   mGravity = vec3(0.0f, -9.8f, 0.0f);
-   mViscosityScalar = 10.0f;
+   mRho0 = 10000.0f;
+   mStiffness = 0.5f;
+   mGravity = vec3(0.0f, 0.0f, 0.0f);
+   mViscosityScalar = 1.0f;
    mTimeStep = 0.0042f;
    mDamping = 0.75f;
 
    // float x = (1000.0f / (float)mParticleCount) * 2.0f;
    // printf("%f\n", x);
-   float mass = 0.001f;
+   float mass = 0.01f * 10.;
    mCflLimit = 100.0f;
    mCflLimit2 = mCflLimit * mCflLimit;
 
@@ -462,7 +465,7 @@ SPH::SPH()
    mKernel3Scaled = -mKernel2Scaled;
 
    // we do not examine a particle against more than 32 other particles
-   mExamineCount = 8; // 8?
+   mExamineCount = 16; // 8?
 
    mSrcParticles = new Particle[mParticleCount];
    mVoxelIds= new int[mParticleCount];
@@ -697,13 +700,16 @@ void SPH::initParticlePolitionsSphere()
    vec3 sphereCenter;
    sphereCenter.set(
       mMaxX * 0.5f,
-      mMaxY * 0.9f,
+      mMaxY * 0.5f,
       mMaxZ * 0.5f
    );
 
-   float radius = 25.0f;
+   float radius = 10.0f;
+   float phi;  // El ang acimutal para la v_tangencial. (atan2(y,x))
+   float v_x_inic, v_z_inic;  // El hdp puso a y como la comp vertical...
+                              // (no quiero v_inic en "z" (que aca es "y"))
 
-   int a = mParticleCount * 0.95f;
+   int a = mParticleCount;  // * 0.95f;
 
    for (int i = 0; i < a; i++)
    {
@@ -729,36 +735,17 @@ void SPH::initParticlePolitionsSphere()
       while (dist > radius);
 
       mSrcParticles[i].mPosition.set(x, y, z);
-      mSrcParticles[i].mVelocity.set(0, 0, 0);
+      //mSrcParticles[i].mVelocity.set(0, 0, 0);
+      // Esto hace que partan del reposo. Estaria bueno
+      // que arranquen con un poquito de momento angular...
+      // e.g. v_rot = (r - r_0) * [x*-sin(phi) + y*cos(phi)] (d_phi 3D)
+      phi = atan2(z - mMaxZ * 0.5f, x - mMaxX * 0.5f);  // Acomodar por el centro de la esfera!
+      v_x_inic = 0.2f * sqrt(dist) * -sin(phi);  // L ~ r (!) -> Check
+      v_z_inic = 0.2f * sqrt(dist) * cos(phi);
+      mSrcParticles[i].mVelocity.set(v_x_inic, 0.0f, v_z_inic);
    }
 
-   // ground
-   for (int i = a; i < mParticleCount; i++)
-   {
-      do
-      {
-         x = rand() / (float)RAND_MAX;
-         y = rand() / (float)RAND_MAX;
-         z = rand() / (float)RAND_MAX;
-
-         x *= mGridCellsX * mHTimes2;
-         y *= mGridCellsY * mHTimes2;
-         z *= mGridCellsZ * mHTimes2;
-
-         if (x == (float)mGridCellsX)
-            x -= 0.00001f;
-         if (y == (float)mGridCellsY)
-            y -= 0.00001f;
-         if (z == (float)mGridCellsZ)
-            z -= 0.00001f;
-
-         dist = (vec3(x,y,z) - sphereCenter).length();
-      }
-      while (y > 10.0f);
-
-      mSrcParticles[i].mPosition.set(x, y, z);
-      mSrcParticles[i].mVelocity.set(0, 0, 0);
-   }
+   // ground -> We don't need "ground"
 }
 
 
@@ -1328,6 +1315,35 @@ void SPH::computeAcceleration(Particle* p, Particle** neighbors, float* neighbor
    // multiplication with rhoiInv could be done here in just one go
    acceleration = viscousTerm - pressureGradient;
 
+   // New vecs (grav):
+   vec3 gravityTerm(0.0f, 0.0f, 0.0f);
+   vec3 gravityTermContribution;
+   /* Necesito masa y la constante de gravitacion G (!!)
+   Don't forget about the softening!!!
+   OG es ~10^-11, pero quiero efectos aumentados
+   para ver como funca (2 blobs de agua no sienten atraccion grav en la Tierra...)
+   cada orden de mag => aumentar la masa de estos blobs. Be careful con la
+   implementacion fisica de estos valores y la divergencia de la velocidad con un Euler
+   basico... */
+   float mGravConstant = 6.7e-4f;  // def como mGravConstant aparte?
+   float softening = mHScaled * 0.5;
+   float distance_ij3;  // Needed...
+   // LASTLY: add a point-mass accel @ the center (e.g. central Black-Hole/NSC)
+   // *once per particle. acc = -G M /r^3 (r^, porque apunta al centro)
+   float central_mass = 100.0f;  // Who knows... Tenemos que acomodar las unidades.
+   vec3 r_cetral_mass(mMaxX * 0.5f,
+                     mMaxY * 0.5f,
+                     mMaxZ * 0.5f);  // La posicion del BH (idem visualizacion)
+   rMinusRj = (r - r_cetral_mass);
+   rMinusRjScaled = rMinusRj * mSimulationScale;
+   distance_ij3 = pow((rMinusRjScaled.length() + softening), 3);
+   gravityTermContribution = rMinusRjScaled/distance_ij3;
+   gravityTermContribution *= -mGravConstant * central_mass;
+   gravityTerm += gravityTermContribution;  // Try it...
+
+   // Updateo la gravedad:
+   acceleration += gravityTerm;
+
    // check CFL condition
    
    float dot =
@@ -1355,12 +1371,51 @@ void SPH::integrate(Particle* p)
    vec3 velocity = p->mVelocity;
 
    // apply external forces
-   acceleration += mGravity;
+   //acceleration += mGravity;  // Esto ya lo hacemos en el otro loop...
 
    // semi-implicit euler integration
    float posTimeStep = mTimeStep * mSimulationScaleInverse;
-   vec3 newVelocity = velocity + (acceleration * mTimeStep);
-   vec3 newPosition = position + (newVelocity * posTimeStep);
+   //vec3 newVelocity = velocity + (acceleration * mTimeStep);
+   //vec3 newPosition = position + (newVelocity * posTimeStep);
+
+   // LF-KDK:
+   // Claro, pero necesito calcular la aceleración de nuevo... ¿Only gravity?
+   vec3 velocity_halfstep;
+   velocity_halfstep = velocity + (acceleration * mTimeStep*0.5);
+   vec3 newPosition = position + (velocity_halfstep * posTimeStep);
+
+   // new half-accel grav (half-step)
+   vec3 newAcceleration;
+   // Chanchada, re def estas cosas acá...
+   // Lo mejor sería handle de otra forma el loop accel + integration en el "setp()".
+   float mGravConstant = 6.7e-4f;
+   float softening = mHScaled * 0.5;
+   float distance_ij3;
+   float central_mass = 100.0f;
+   vec3 r_cetral_mass(mMaxX * 0.5f,
+                     mMaxY * 0.5f,
+                     mMaxZ * 0.5f);  // La posicion del BH (idem visualizacion)
+   vec3 rMinusRj  = (newPosition - r_cetral_mass);
+   vec3 rMinusRjScaled = rMinusRj * mSimulationScale;
+   distance_ij3 = pow((rMinusRjScaled.length() + softening), 3);
+   newAcceleration = rMinusRjScaled/distance_ij3;
+   newAcceleration *= -mGravConstant * central_mass;
+   // check CFL condition
+   
+   float dot =
+        newAcceleration.x * newAcceleration.x
+      + newAcceleration.y * newAcceleration.y
+      + newAcceleration.z * newAcceleration.z;
+
+   bool limitExceeded = (dot > mCflLimit2);
+   if (limitExceeded)
+   {
+      float length = sqrt(dot);
+      float cflScale = mCflLimit / length;
+      newAcceleration *= cflScale;
+   }
+
+   vec3 newVelocity = velocity_halfstep + (newAcceleration * mTimeStep);
 
    // let particles bounce back if they collide with the grid boundaries
    handleBoundaryConditions(
