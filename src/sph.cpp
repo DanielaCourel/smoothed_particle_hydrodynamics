@@ -428,8 +428,8 @@ SPH::SPH()
    mAngularMomentumTotal(vec3(0.0f, 0.0f, 0.0f))
 {
    // grid
-   float h = 3.34f;
-   mSimulationScale = 0.004f;
+   float h = 3.34f;  // OG = 3.34
+   mSimulationScale = 0.004f;  // OG = 4e-3
    mSimulationScaleInverse = 1.0f / mSimulationScale;
    mH = h;
    mH2 = pow(h, 2);
@@ -448,20 +448,27 @@ SPH::SPH()
    mMaxX = mCellSize * mGridCellsX;
    mMaxY = mCellSize * mGridCellsY;
    mMaxZ = mCellSize * mGridCellsZ;
-   totalSteps = 1000;
+
+   // Queremos fijar un t de simu:
+   // t_sim = N_step * delta_step;
+   // Luego, buscamos la menor cant de N_steps sin romper el sistema
+   // i.e. no se "rompe" la energía. ¿Qué pasa si aumentamos el "CflLimit"?
+   float time_simu = 1.0f;  // Por ejemplo
+   mTimeStep = 0.001f;  // Esto hay que modificar
+   totalSteps = (int)round(time_simu/mTimeStep);  // Esto sale de los otros 2 params
 
    // physics
-   mRho0 = 10000.0f;
-   mStiffness = 0.5f;
+   mRho0 = 1.0f;  // OG = 1e+4
+   mStiffness = 1.0f;  // OG = 0.5
    mGravity = vec3(0.0f, 0.0f, 0.0f);
-   mViscosityScalar = 1.0f;
-   mTimeStep = 0.0042f;
-   mDamping = 0.75f;
+   mViscosityScalar = 1.0f;  // OG = 1.
+   //mTimeStep = 0.0042f;
+   mDamping = 0.0001f;  // OG = 0.75, pero no queremos que reboten... ("afuera" => escape...)
 
    // float x = (1000.0f / (float)mParticleCount) * 2.0f;
    // printf("%f\n", x);
-   float mass = 0.01f * 10.;
-   mCflLimit = 100.0f;
+   float mass = 0.1f * 10.;  // OG = 0.01
+   mCflLimit = 1000.0f;  // OG = 100.0
    mCflLimit2 = mCflLimit * mCflLimit;
 
    // smoothing kernels
@@ -470,7 +477,7 @@ SPH::SPH()
    mKernel3Scaled = -mKernel2Scaled;
 
    // we do not examine a particle against more than 32 other particles
-   mExamineCount = 16; // 8?
+   mExamineCount = 32; // 8?
 
    mSrcParticles = new Particle[mParticleCount];
    mVoxelIds= new int[mParticleCount];
@@ -735,13 +742,14 @@ void SPH::initParticlePolitionsSphere()
       mMaxZ * 0.5f
    );
 
-   float radius = 10.0f;
+   float radius = 15.0f;
    float phi;  // El ang acimutal para la v_tangencial. (atan2(y,x))
-   float v_x_inic, v_z_inic;  // El hdp puso a y como la comp vertical...
+   float v_x_inic, v_y_inic, v_z_inic;  // El hdp puso a y como la comp vertical...
                               // (no quiero v_inic en "z" (que aca es "y"))
 
    int a = mParticleCount;  // * 0.95f;
 
+   // Fix seed?
    for (int i = 0; i < a; i++)
    {
       do
@@ -771,9 +779,11 @@ void SPH::initParticlePolitionsSphere()
       // que arranquen con un poquito de momento angular...
       // e.g. v_rot = (r - r_0) * [x*-sin(phi) + y*cos(phi)] (d_phi 3D)
       phi = atan2(z - mMaxZ * 0.5f, x - mMaxX * 0.5f);  // Acomodar por el centro de la esfera!
-      v_x_inic = 0.2f * sqrt(dist) * -sin(phi);  // L ~ r (!) -> Check
-      v_z_inic = 0.2f * sqrt(dist) * cos(phi);
-      mSrcParticles[i].mVelocity.set(v_x_inic, 0.0f, v_z_inic);
+      v_x_inic = 3.2f * pow(dist + mHScaled*0.5, -0.5) * -sin(phi);  // L ~ r (!) -> Check
+      v_z_inic = 3.2f * pow(dist + mHScaled*0.5, -0.5) * cos(phi);
+      // Some random movements on "y" (z)
+      v_y_inic = ((rand() / (float)RAND_MAX) * 0.5f) - 0.25f;
+      mSrcParticles[i].mVelocity.set(v_x_inic, v_y_inic, v_z_inic);
    }
 
    // ground -> We don't need "ground"
@@ -1357,7 +1367,7 @@ void SPH::computeAcceleration(Particle* p, Particle** neighbors, float* neighbor
    implementacion fisica de estos valores y la divergencia de la velocidad con un Euler
    basico... */
    float mGravConstant = 6.7e-4f;  // def como mGravConstant aparte?
-   float softening = mHScaled * 0.5;
+   float softening = mHScaled * 0.5;  // mHScaled or mH?
    float distance_ij3;  // Needed...
    // LASTLY: add a point-mass accel @ the center (e.g. central Black-Hole/NSC)
    // *once per particle. acc = -G M /r^3 (r^, porque apunta al centro)
@@ -1391,7 +1401,8 @@ void SPH::computeAcceleration(Particle* p, Particle** neighbors, float* neighbor
    }
 
    // Energía potencial sería G*Mcentral*m_i/r_i
-   mPotentialEnergyTotal += -mGravConstant * central_mass * p->mMass / (rMinusRjScaled.length() + softening);
+   mPotentialEnergyTotal += -mGravConstant * central_mass * p->mMass / (rMinusRjScaled.length());
+   // + softening);  // B: Without soft (i.e. without a Plummer equivalent)
 
    // yay. done.
    p->mAcceleration = acceleration;
@@ -1407,13 +1418,14 @@ void SPH::integrate(Particle* p)
    // apply external forces
    //acceleration += mGravity;  // Esto ya lo hacemos en el otro loop...
 
-   // semi-implicit euler integration
+   // semi-implicit Euler
    float posTimeStep = mTimeStep * mSimulationScaleInverse;
    //vec3 newVelocity = velocity + (acceleration * mTimeStep);
    //vec3 newPosition = position + (newVelocity * posTimeStep);
 
    // LF-KDK:
    // Claro, pero necesito calcular la aceleración de nuevo... ¿Only gravity?
+ 
    vec3 velocity_halfstep;
    velocity_halfstep = velocity + (acceleration * mTimeStep*0.5);
    vec3 newPosition = position + (velocity_halfstep * posTimeStep);
@@ -1421,7 +1433,7 @@ void SPH::integrate(Particle* p)
    // new half-accel grav (half-step)
    vec3 newAcceleration;
    // Chanchada, re def estas cosas acá...
-   // Lo mejor sería handle de otra forma el loop accel + integration en el "setp()".
+   // Lo mejor sería handle de otra forma el loop accel + integration en el "step()".
    float mGravConstant = 6.7e-4f;
    float softening = mHScaled * 0.5;
    float distance_ij3;
@@ -1465,7 +1477,8 @@ void SPH::integrate(Particle* p)
    p->mKineticEnergy = 0.5f * p->mMass * (newVelocity.x * newVelocity.x + newVelocity.y * newVelocity.y + newVelocity.z * newVelocity.z);
    // update angular momentum m * (r x v)
    p->mAngularMomentum = p->mMass * (newPosition.cross(newVelocity));
-
+   // B: It's negative because we are using "y" as the vertical. Como las v_inic (rot) las def según
+   // (x, z) => ^x X ^z = -^y...
 }
 
 
