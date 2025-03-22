@@ -17,7 +17,7 @@
 
 // write
 #include <iostream>
-
+#include <fstream>
 
 /*
 
@@ -420,7 +420,10 @@ SPH::SPH()
    mGridCellCount(0),
    mRho0(0.0f),
    mStopped(false),
-   mPaused(false)
+   mPaused(false),
+   mKineticEnergyTotal(0.0f),
+   mPotentialEnergyTotal(0.0f),
+   mAngularMomentumTotal(vec3(0.0f, 0.0f, 0.0f))
 {
    // grid
    float h = 3.34f;
@@ -519,14 +522,24 @@ bool SPH::isPaused() const
 void SPH::run()
 {
    int stepCount = 0;
+
+   std::ofstream outfile1("out/energy.txt");
+   outfile1 << "Step, Kinetic Energy, Potential Energy, Total Energy" << std::endl;
+   std::ofstream outfile2("out/angularmomentum.txt");
+   outfile2 << "Step, Angular Momentum" << std::endl;
+
    while(!isStopped() && stepCount <= totalSteps)
    {
       if (!isPaused())
       {
          step();
+         outfile1 << stepCount << ", " << mKineticEnergyTotal << ", " << mPotentialEnergyTotal << ", " << mKineticEnergyTotal + mPotentialEnergyTotal << std::endl;
+         outfile2 << stepCount << ", " << mAngularMomentumTotal.x + mAngularMomentumTotal.y + mAngularMomentumTotal.z << std::endl;
          stepCount++;
       }
    }
+   outfile1.close(); // Cierra el archivo
+   outfile2.close(); // Cierra el archivo
 }
 
 
@@ -539,6 +552,9 @@ void SPH::step()
    int timeComputeAcceleration = 0;
    int timeIntegrate = 0;
    QElapsedTimer t;
+   mKineticEnergyTotal = 0.0f;
+   mPotentialEnergyTotal = 0.0f;
+   mAngularMomentumTotal = vec3(0.0f, 0.0f, 0.0f);
 
    // put particles into voxel grid
    t.start();
@@ -616,6 +632,8 @@ void SPH::step()
       Particle* particle = &mSrcParticles[particleIndex];
 
       integrate(particle);
+      mKineticEnergyTotal += particle->mKineticEnergy;
+      mAngularMomentumTotal += particle->mAngularMomentum;
    }
    timeIntegrate = t.nsecsElapsed() / 1000000;
 
@@ -1359,6 +1377,9 @@ void SPH::computeAcceleration(Particle* p, Particle** neighbors, float* neighbor
       acceleration *= cflScale;
    }
 
+   // Energía potencial sería G*Mcentral*m_i/r_i
+   mPotentialEnergyTotal += -mGravConstant * central_mass * p->mMass / (rMinusRjScaled.length() + softening);
+
    // yay. done.
    p->mAcceleration = acceleration;
 }
@@ -1427,6 +1448,11 @@ void SPH::integrate(Particle* p)
 
    p->mVelocity = newVelocity;
    p->mPosition = newPosition;
+   // update kinetic energy
+   p->mKineticEnergy = 0.5f * p->mMass * (newVelocity.x * newVelocity.x + newVelocity.y * newVelocity.y + newVelocity.z * newVelocity.z);
+   // update angular momentum m * (r x v)
+   p->mAngularMomentum = p->mMass * (newPosition.cross(newVelocity));
+
 }
 
 

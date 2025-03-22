@@ -15,6 +15,16 @@ class vec3
       float y;
       float z;
 
+      // Croos product
+      inline vec3 cross(const vec3& v) const
+      {
+         return vec3(
+            y * v.z - z * v.y,
+            z * v.x - x * v.z,
+            x * v.y - y * v.x
+         );
+      }
+
 
       inline void set(float sx, float sy, float sz)
       {
@@ -47,6 +57,10 @@ class vec3
          return vec3(this->x * rhs, this->y * rhs, this->z * rhs);
       }
 
+      // Sobrecarga del operador * para multiplicar un float por un vec3 (lado izquierdo)
+      friend vec3 operator * (float lhs, const vec3& rhs) {
+         return vec3(lhs * rhs.x, lhs * rhs.y, lhs * rhs.z);
+      }
 
       inline vec3 operator / (float rhs) const
       {

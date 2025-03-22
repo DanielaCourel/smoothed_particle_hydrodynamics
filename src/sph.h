@@ -174,6 +174,9 @@ protected:
       float* mNeighborDistancesScaled;
 
       int totalSteps;
+      float mKineticEnergyTotal;
+      float mPotentialEnergyTotal;
+      vec3 mAngularMomentumTotal;
 
       // physics
       float mRho0;
