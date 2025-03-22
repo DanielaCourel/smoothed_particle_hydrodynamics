@@ -18,6 +18,8 @@
 // write
 #include <iostream>
 #include <fstream>
+#include <sys/stat.h> 
+#include <sys/types.h> 
 
 /*
 
@@ -523,10 +525,20 @@ void SPH::run()
 {
    int stepCount = 0;
 
+   // Create directory ./out
+   const char *path = "out";
+   int result = mkdir(path, 0777);
+   if (result == 0)
+      std::cout << "Directory created" << std::endl;
+   else
+      std::cout << "Directory already exists" << std::endl;
+
+   // Create files
    std::ofstream outfile1("out/energy.txt");
    outfile1 << "Step, Kinetic Energy, Potential Energy, Total Energy" << std::endl;
    std::ofstream outfile2("out/angularmomentum.txt");
    outfile2 << "Step, Angular Momentum" << std::endl;
+
 
    while(!isStopped() && stepCount <= totalSteps)
    {
@@ -538,8 +550,9 @@ void SPH::run()
          stepCount++;
       }
    }
-   outfile1.close(); // Cierra el archivo
-   outfile2.close(); // Cierra el archivo
+
+   outfile1.close();
+   outfile2.close();
 }
 
 
