@@ -456,12 +456,12 @@ SPH::SPH()
    totalSteps = (int)round(time_simu/mTimeStep);  // Esto sale de los otros 2 params
 
    // physics
-   mRho0 = 10.0f;  // OG = 1e+4
-   mStiffness = 0.7f;  // OG = 0.5
+   mRho0 = 1.0f;  // OG = 1e+4
+   mStiffness = 1.0f;  // OG = 0.5
    mGravity = vec3(0.0f, 0.0f, 0.0f);
-   mViscosityScalar = 0.1f;  // OG = 1.
+   mViscosityScalar = 1.0f;  // OG = 1.
    //mTimeStep = 0.0042f;
-   mDamping = 0.001f;  // OG = 0.75, pero no queremos que reboten... ("afuera" => escape...)
+   mDamping = 0.0001f;  // OG = 0.75, pero no queremos que reboten... ("afuera" => escape...)
 
    // float x = (1000.0f / (float)mParticleCount) * 2.0f;
    // printf("%f\n", x);
@@ -475,7 +475,7 @@ SPH::SPH()
    mKernel3Scaled = -mKernel2Scaled;
 
    // we do not examine a particle against more than 32 other particles
-   mExamineCount = 16; // 8?
+   mExamineCount = 32; // 8?
 
    mSrcParticles = new Particle[mParticleCount];
    mVoxelIds= new int[mParticleCount];
