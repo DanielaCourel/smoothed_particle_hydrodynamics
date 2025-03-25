@@ -464,9 +464,9 @@ SPH::SPH()
    mRho0 = 1.0f;  // OG = 1e+4
    mStiffness = 1.0f;  // OG = 0.5
    mGravity = vec3(0.0f, 0.0f, 0.0f);
-   mViscosityScalar = 1.0f;  // OG = 1.
+   mViscosityScalar = 10.0f;  // OG = 1.; 1e+3 == nice disk formation (!!!)
    //mTimeStep = 0.0042f;
-   mDamping = 0.0001f;  // OG = 0.75, pero no queremos que reboten... ("afuera" => escape...)
+   mDamping = 0.001f;  // OG = 0.75, pero no queremos que reboten... ("afuera" => escape...)
 
    // float x = (1000.0f / (float)mParticleCount) * 2.0f;
    // printf("%f\n", x);
@@ -1483,7 +1483,9 @@ void SPH::integrate(Particle* p)
    // update kinetic energy
    p->mKineticEnergy = 0.5f * p->mMass * (newVelocity.x * newVelocity.x + newVelocity.y * newVelocity.y + newVelocity.z * newVelocity.z);
    // update angular momentum m * (r x v)
-   p->mAngularMomentum = p->mMass * (newPosition.cross(newVelocity));
+   // B: OJO, tiene que ser respecto a la masa central, no al origen...
+   //p->mAngularMomentum = p->mMass * (newPosition.cross(newVelocity));
+   p->mAngularMomentum = p->mMass * (rMinusRj.cross(newVelocity));
    // B: It's negative because we are using "y" as the vertical. Como las v_inic (rot) las def según
    // (x, z) => ^x X ^z = -^y...
 }

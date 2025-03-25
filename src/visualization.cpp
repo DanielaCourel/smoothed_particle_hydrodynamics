@@ -357,8 +357,8 @@ void Visualization::paintGL()
    glMatrixMode(GL_MODELVIEW);
    glLoadIdentity();
    glRotatef(180.0f, 0.0f, 1.0f, 0.0f);
-   glTranslatef(-0.5f, -0.5f, 0.0f);
-   glScalef(invScaleX, invScaleY, invScaleZ);
+   glTranslatef(-0.75f, -0.75f, 0.0f);
+   glScalef(invScaleX*1.5, invScaleY*1.5, invScaleZ*1.5);
 
    // draw bounding box
    drawBox(maxX, maxY, maxZ);
