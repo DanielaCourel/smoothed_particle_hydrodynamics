@@ -178,6 +178,14 @@ protected:
       float mPotentialEnergyTotal;
       vec3 mAngularMomentumTotal;
 
+      // timers
+      int timeVoxelize;
+      int timeFindNeighbors;
+      int timeComputeDensity;
+      int timeComputePressure;
+      int timeComputeAcceleration;
+      int timeIntegrate;
+
       // physics
       float mRho0;
       float mStiffness;

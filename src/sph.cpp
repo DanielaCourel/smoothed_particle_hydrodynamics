@@ -19,7 +19,10 @@
 #include <iostream>
 #include <fstream>
 #include <sys/stat.h> 
-#include <sys/types.h> 
+#include <sys/types.h> // write
+#include <iostream>
+#include <fstream>
+#include <sys/stat.h> 
 
 /*
 
@@ -545,6 +548,8 @@ void SPH::run()
    outfile1 << "Step, Kinetic Energy, Potential Energy, Total Energy" << std::endl;
    std::ofstream outfile2("out/angularmomentum.txt");
    outfile2 << "Step, Angular Momentum" << std::endl;
+   std::ofstream outfile3("out/timing.txt");
+   outfile3 << "Step, Voxelize, Find Neighbors, Compute Density, Compute Pressure, Compute Acceleration, Integrate" << std::endl;
 
 
    while(!isStopped() && stepCount <= totalSteps)
@@ -553,24 +558,26 @@ void SPH::run()
       {
          step();
          outfile1 << stepCount << ", " << mKineticEnergyTotal << ", " << mPotentialEnergyTotal << ", " << mKineticEnergyTotal + mPotentialEnergyTotal << std::endl;
-         outfile2 << stepCount << ", " << mAngularMomentumTotal.x + mAngularMomentumTotal.y + mAngularMomentumTotal.z << std::endl;
+         outfile2 << stepCount << ", " << mAngularMomentumTotal.length() << std::endl;
+         outfile3 << stepCount << ", " << timeVoxelize << ", " << timeFindNeighbors << ", " << timeComputeDensity << ", " << timeComputePressure << ", " << timeComputeAcceleration << ", " << timeIntegrate << std::endl;
          stepCount++;
       }
    }
 
    outfile1.close();
    outfile2.close();
+   outfile3.close();
 }
 
 
 void SPH::step()
 {
-   int timeVoxelize = 0;
-   int timeFindNeighbors = 0;
-   int timeComputeDensity = 0;
-   int timeComputePressure = 0;
-   int timeComputeAcceleration = 0;
-   int timeIntegrate = 0;
+   timeVoxelize = 0;
+   timeFindNeighbors = 0;
+   timeComputeDensity = 0;
+   timeComputePressure = 0;
+   timeComputeAcceleration = 0;
+   timeIntegrate = 0;
    QElapsedTimer t;
    mKineticEnergyTotal = 0.0f;
    mPotentialEnergyTotal = 0.0f;
