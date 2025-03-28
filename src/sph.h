@@ -19,7 +19,7 @@ Q_OBJECT
 
    public:
 
-      SPH();
+      SPH(int particleCount = 1024);
       virtual ~SPH();
 
       // control
@@ -68,6 +68,8 @@ public slots:
 
       void pauseResume();
       void stopSimulation();
+
+      void setParticleCount(int count) { mParticleCount = count * 1024; }
 
 
 signals:

@@ -2,6 +2,7 @@
 #include <QApplication>
 #include <QDesktopWidget>
 #include <QThread>
+#include <iostream>
 
 // sph
 #include "sph.h"
@@ -16,8 +17,22 @@ int main(int argc, char *argv[])
 
 //   int width = a.desktop()->width();
 //   int height = a.desktop()->height();
+   int particleCount = 1024;
+   
+   if (argc > 2)
+   {
+      try {
+         particleCount = std::stoi(argv[2]);
+      } catch (const std::invalid_argument& e) {
+         std::cerr << "Invalid number of particles: " << argv[2] << std::endl;
+         return 1;
+      } catch (const std::out_of_range& e) {
+         std::cerr << "Number of particles out of range: " << argv[2] << std::endl;
+         return 1;
+      }
+   }
 
-   SPH sph;
+   SPH sph(particleCount);
 
    // run simulation whitout visualization
    if (argc > 1 && std::string(argv[1]) == "r") 

@@ -24,6 +24,8 @@
 #include <fstream>
 #include <sys/stat.h> 
 
+#include <QDir>
+
 /*
 
    Smoothed particle hydrodynamics (SPH),
@@ -420,7 +422,7 @@
 
 
 
-SPH::SPH()
+SPH::SPH(int particleCount)
  : mParticleCount(0),
    mGridCellCount(0),
    mRho0(0.0f),
@@ -442,7 +444,7 @@ SPH::SPH()
    mHScaled2 = pow(h * mSimulationScale, 2);
    mHScaled6 = pow(h * mSimulationScale, 6);
    mHScaled9 = pow(h * mSimulationScale, 9);
-   mParticleCount = 16 * 1024;
+   mParticleCount = particleCount * 1024;
    mGridCellsX = 32;
    mGridCellsY = 32;
    mGridCellsZ = 32;
@@ -536,21 +538,17 @@ void SPH::run()
    int stepCount = 0;
 
    // Create directory ./out
-   const char *path = "out";
-   int result = mkdir(path, 0777);
-   if (result == 0)
-      std::cout << "Directory created" << std::endl;
-   else
-      std::cout << "Directory already exists" << std::endl;
+   QString outputDir = "out_" + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
+   QDir().mkdir(outputDir);
 
    // Create files
-   std::ofstream outfile1("out/energy.txt");
+   std::ofstream outfile1(outputDir.toStdString() + "/energy.txt");
    outfile1 << "Step, Kinetic Energy, Potential Energy, Total Energy" << std::endl;
-   std::ofstream outfile2("out/angularmomentum.txt");
+   std::ofstream outfile2(outputDir.toStdString() + "/angularmomentum.txt");
    outfile2 << "Step, Angular Momentum" << std::endl;
-   std::ofstream outfile3("out/timing.txt");
+   std::ofstream outfile3(outputDir.toStdString() + "/timing.txt");
    outfile3 << "Step, Voxelize, Find Neighbors, Compute Density, Compute Pressure, Compute Acceleration, Integrate" << std::endl;
-
+   
 
    while(!isStopped() && stepCount <= totalSteps)
    {
