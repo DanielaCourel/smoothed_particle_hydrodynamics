@@ -180,6 +180,19 @@ protected:
       Particle** mNeighbors;
       float* mNeighborDistancesScaled;
 
+      int totalSteps;
+      float mKineticEnergyTotal;
+      float mPotentialEnergyTotal;
+      vec3 mAngularMomentumTotal;
+
+      // timers
+      int timeVoxelize;
+      int timeFindNeighbors;
+      int timeComputeDensity;
+      int timeComputePressure;
+      int timeComputeAcceleration;
+      int timeIntegrate;
+
       // physics
       float mRho0;
       float mStiffness;

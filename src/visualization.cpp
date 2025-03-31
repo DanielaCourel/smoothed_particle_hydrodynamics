@@ -6,6 +6,7 @@
 
 // Qt
 #include <QTimer>
+#include <QElapsedTimer>
 
 // sph
 #include "particle.h"
@@ -30,7 +31,7 @@ Visualization::Visualization(QWidget *parent) :
    );
 
    timer->start(16);
-   mElapsed.start();
+   QElapsedTimer mElapsed;
 }
 
 
@@ -137,7 +138,7 @@ void Visualization::drawParticles()
 {
    glBlendFunc(GL_ONE, GL_ONE);
 
-   QTime elapsed;
+   QElapsedTimer elapsed;
    elapsed.start();
 
    int count = mSph->getParticleCount();
@@ -158,8 +159,7 @@ void Visualization::drawParticles()
 
    glEnd();
 
-   emit updateElapsed(elapsed.elapsed());
-   // We should save this time
+   emit updateElapsed(elapsed.nsecsElapsed() / 1000000);
 }
 
 
@@ -358,8 +358,8 @@ void Visualization::paintGL()
    glMatrixMode(GL_MODELVIEW);
    glLoadIdentity();
    glRotatef(180.0f, 0.0f, 1.0f, 0.0f);
-   glTranslatef(-0.5f, -0.5f, 0.0f);
-   glScalef(invScaleX, invScaleY, invScaleZ);
+   glTranslatef(-0.75f, -0.75f, 0.0f);
+   glScalef(invScaleX*1.5, invScaleY*1.5, invScaleZ*1.5);
 
    // draw bounding box
    drawBox(maxX, maxY, maxZ);
