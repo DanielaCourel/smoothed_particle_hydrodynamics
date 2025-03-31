@@ -1,7 +1,8 @@
 // base
 #include "particle.h"
 
-
+/* Es demasiado grande al pedo. No hace falta guardar las inversas
+de las densidades, más vale las calculemos on-the-fly; ¿Ídem Energía/AngMom? */
 Particle::Particle()
  : mMass(1.0f),
    mDensity(0.0f),

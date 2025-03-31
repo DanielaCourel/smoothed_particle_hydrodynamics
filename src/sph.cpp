@@ -22,403 +22,10 @@
 #include <sys/types.h> // write
 #include <iostream>
 #include <fstream>
-#include <sys/stat.h> 
+#include <sys/stat.h>
 
-/*
-
-   Smoothed particle hydrodynamics (SPH),
-   by Matthias Varnholt a.k.a mueslee^hjb in 2015/2016
-
-   This code and my (most likely incorrect) notes below are based on a
-   webinar held by Alan Heirich
-
-
-   Why SPH?
-
-      We have a bunch of particles we'd like to animate just like real water
-      would move like. The more physically correct the simulation is the more
-      convincing the effect looks like. Navier and Stokes developed equations
-      that serve this very purpose. SPH gives approximations for every term
-      in the Navier-Stokes equations, i.e. SPH helps us doing the actual math.
-
-
-   Terms
-
-      Examples for fluids: Gasses (e.g. air), Liquids (e.g. water), aerosols
-      Examples for liquids: Water, everything that's (mostly) incompressible
-      Examples for aerosols: Smoke
-
-
-   Incompressible Navier-Stokes
-
-      Mr. Navier and Mr. Stokes developed equations for the motion of fluids.
-      The 'Incompressible Navier-Stokes' variant can be used to compute the
-      motion of fluids that are not compressible - like liquids, or water in
-      particular.
-
-      The Incompressible Navier-Stokes equation consist of two elements:
-      - The equation of motion
-      - The equation of mass continuity
-
-
-      The 'equation of motion'
-
-         The equation of motion says that changes in velocity are described as
-         a function of
-
-            - gravity g
-                                       __
-            - (a gradient of) pressure \/p:
-              fluid flows from high pressure to low pressure regions
-                        __
-            - velocity u\/^2v
-
-            - viscosity u:
-              the fluid stickiness, low: air water, high: honey, mud
-
-         I.e. the fluid moves
-         - under the force of gravity
-         - under the force of pressure
-         - under the force of the 'viscous term'
-
-
-      The 'mass continuity equation'
-                   __
-         rho     ( \/ dot v ) = 0
-         ^         ^
-         density   divergence
-                   of velocity
-
-         The equation of mass continuity expresses that mass is neither created
-         nor destroyed.
-
-         For the incompressible equation the density is assumed to be constant.
-         Therefore for our purpose it does not need to be considered. All the
-         mass we will start with, we will still have at the end.
-
-
-      Since the mass continuity equations just says that we must not create
-      nor destroy particles while we're computing (i.e. we are assuming a
-      constant number of particles), this term does not need to be solved.
-
-
-      So back to the equation of motion.
-
-      It looks like this:
-                                        __                     __        __
-         rho     * [dv/dt       + v dot \/v]      = rho * g -  \/p +    u\/^2v
-
-         rho: density of the fluid, a scalar variable
-         p:   pressure of the fluid, also a scalar variable
-         g:   gravity, a 3D vector
-         v:   velocity, also a 3D vector
-
-      In words:
-
-                    the           the convective
-         density * [derivative  + acceleration  ] = gravity - pressure + viscosity
-                    of velocity   term                        gradient   term
-
-
-      The 'convective acceleration term':
-               __
-         v dot \/v = [v  * dv  / dx; v  * dv   / dy; v  * dv  / dz]
-                       x     x        y     y         z     z
-
-                           ^              ^               ^
-                           partial derivatives of v with respect
-                           to x, y and z
-
-         If fluids have to move through an area of limited space, their
-         velocity increases. That's because the same volume of fluid is moved
-         from a larger region to an area with less space. A good example is
-         water flowing through a hose.
-
-
-      The 'pressure gradient':
-           __
-         - \/p = [dp / dx; dp / dy; dp / dz]
-
-                  ^
-                  partial derivatives of p with respect
-                  to x, y and z
-
-         A gradient can be understood as a slope in a higher dimension (like
-         a hillside). The sign of the pressure gradient function is negative.
-         This is because the system moves from a region of high pressure to a
-         region of low pressure.
-
-         The pressure p is defined as follows:
-
-         p = k       ( rho              - rho0 )
-             ^         ^                  ^
-             some      actual             resting density
-             scalar    density of        (the density of the fluid
-                       the fluid at       at equilibrium)
-                       a given point
-
-         rho > rho0 => positive pressure
-         rho < rho0 => negative pressure (suction)
-
-
-      The 'viscosity term':
-             __           __       __      __
-         u * \/^2 * v = [ \/^2 v , \/^2v , \/^2 v  ]
-                                x       y        z
-         __
-         \/^2 is also called the 'Laplacian operator' or the 'diffusion
-         operator'. It diffuses whatever quantity it is applied to.
-         => It is diffusing velocity.
-         => It is diffusing the momentum of the system.
-         Diffusing the velocity of the system will result in a system having
-         identical velocities at every position sooner or later.
-
-
-
-      The material derivative
-
-         We want to represent the dynamics of the system by a set of
-         particles and we do that by taking the material derivative. The
-         material derivative is the derivative along a path with a given
-         velocity v.
-
-                                    __       __
-            rho * Dv/Dt = rho * g - \/ p + u \/^2 v
-
-
-         Now we have a simple equation for the motion of a single particle i:
-
-            dv
-              i        1    __    u    __
-            --- = g -  ---- \/p + ---- \/^2 v
-            dt         rho        rho
-                          i          i
-
-         The derivative of the velocity of particle i with respect to time is
-         gravity - (the pressure gradient / the density rho) plus (the
-         viscosity term devided by our density rho).
-
-         These are the equations we will actually solve.
-
-
-
-   From Navier Stokes to Smoothed Particle Hydrodynamics
-
-      We can represent any quantity by the summation of nearby points
-      multiplied with a weighting function W. W is also called 'smoothing
-      kernel'. They've been introduced by Monaghan in '92 - *sigh*.
-
-      W will give more strength to points that are close to us
-      - Points that are further away from us have a weaker influence on us.
-      - For points away more than a certain distance, W will return 0,
-        i.e. they don't affect us at all.
-        How far a quantity must be away before it stops interacting with us
-        is called the 'interaction radius'
-
-      This is evaluating a quantity by sampling a neighborhood of space
-      and weighting points by how close they are to our sampling points.
-
-      Monaghan also introduced approximations to the terms of the
-      incompressible Navier-Stokes equation.
-
-
-
-   Smoothed Particle Hydrodynamics
-
-      Here are the approximations for the individual terms of the
-      incompressible Navier-Stokes equations:
-
-      '~=' : 'approximately equal'
-
-      1)
-
-
-         rho  ~= SUM m  W(r - r , h)
-            i         j        j
-
-
-         I.e. the density is approximately equal to the sum of the masses of
-         nearby points, weighted by the smoothing kernel W. Density is the
-         amount of mass at a given point, so this should be fairly reasonable.
-         So we approximate the density at point i by the summation of
-         neighboring points j (weighted appropriately).
-
-
-      2)
-
-         __
-         \/p              p        p
-            i              i        j        __
-         ----  ~= SUM m ( ------ + ------ )  \/ W (r - r , h)
-         rho           j   rho^2    rho^2                j
-            i                   i        j
-
-         The pressure gradient divided by rho i is approximately equal to the
-         sums of the masses at various points j multiplied by a scalar quantity
-         of pressure over density. The term is multiplied by the gradient of a
-         smoothing kernel (\/W) which is a vector expression (since a gradient
-         is a vector). Therefore the result of this whole expression is a
-         vector value.
-
-
-      3)
-                                        v  - v
-         u    __          u              j    i        __
-         ---- \/^2 v   ~= ---- SUM m  ( ------------ ) \/^2 W (r - r , h)
-         rho        i     rho       j   rho                         j
-            i                i             j
-
-         u is a scalar coefficient that says how viscous is the fluid. If you
-         choose a small value for u it behaves like water, for larger values
-         of u its behavior is more like sirup.
-
-         This viscosity term is approximately u divided by rho multiplied
-         with the sum of the masses of several points j nearby multiplied by
-         the difference in velocity between two points (i and j), divided by
-         the density of j. Finally the term is multiplied by the Laplacian of
-         the smoothing kernel \/^2W. If vj and vi are equal, there's no
-         viscous interaction between them, if the difference between them is
-         small, there's a small viscous interaction and for large differences
-         between vi and vj, there will be a large viscous interaction.
-
-         Over time this term has the effect of encouraging particles to travel
-         together (to move in the same direction).
-
-
-
-      Smoothing kernels:
-
-         Attributes of smoothing kernels:
-         - At a distance h, w will drop to 0. I.e. particles that are too far
-           away will not interact with the particle currently processed.
-         - Over a sphere of radius h, w sums to 1.
-
-
-         ||r - r  ||^2: the distance between two points, squared
-                b
-
-         There's not much intiution about these :)
-
-         1)
-
-                   315
-         W =  ------------- ( h^2 - || r - r ||^2 )^3
-              64 * PI * h^9                 b
-
-
-         2)
-                                                    r - r
-         __     -45                                      b
-         \/W =  -------- * (h - ||r - r  ||)^2 * ------------
-                PI * h^6               b         || r - r  ||
-                                                         b
-
-         3)
-
-         __                  45
-         \/^2 W(r - r , h) = -------- * (h - ||r - r  ||)
-                     b       PI * h^6               b
-
-
-
-
-   Algorithm:
-
-      dv
-        i        1    __    u    __
-      --- = g -  ---- \/p + ---- \/^2 v
-      dt         rho        rho
-                    i          i
-
-      Based on the material derivative, we do the following:
-
-      1) Compute an approximation for rho for every particle
-         using equation 1.
-
-      2) Evaluate equation 2, the pressure gradient. It depends on rho,
-         so rho needs to be computed first. It also depends on the pressure
-         gradient which is calculated by computing the difference between
-         rho and rho0, the resting potential (see above).
-
-      3) Evaluate equation 3, the viscous term. It depends on rho and on
-         the current velocity of the particle.
-
-      4) After having computed all the approximations, we can put them
-         together in the material derivative formula. Using a simple numerical
-         scheme we can timestep the velocity first and then compute the new
-         position of the particle.
-
-      In short:
-
-         For each particle
-         1) compute the density
-         2) compute the pressure from density
-         3) compute the pressure gradient
-         4) calc the viscosity term
-         5) timestep the velocity and calculate the next position
-
-
-   Optimizations:
-
-      Without optimization we'd have to test every particle against every
-      particle (O(n^2)). The result will still be correct because the smoothing
-      kernel W will give 0 for as result for all particles that are outside the
-      interaction radius.
-
-      1) Voxels
-         Device space into local regions of space (voxels). Those voxels should
-         have the size 2h on a side (twice the interactivity radius; quantities
-         outside this radius are not interacting with the particle).
-
-         So a particle can only interact with
-         - particles in the same voxel and in
-         - adjacent voxels
-
-        If a particle was exactly in the center of a voxel, it could only
-        interact with particles in the same voxel; if it's not in the perfect
-        center, it could interact with particles of 2x2x2 voxels.
-
-      2) Subsets
-         Choose a random subset of n particles (for example 32) because in
-         most cases it's not required to take all the particles into account.
-         Those 32 are good enough.
-
-
-
-   ----------------------------------------------------------------------------
-
-   temp notes:
-
-      g: gravity
-      v: velocity
-
-      m: mass
-      V: volume
-      density (rho) = m/V
-
-      density of water: 999,97 kg/m³
-
-      number density (n): concentration of particles in our volume
-                      n = N (number of particles) / V
-
-
-   TODO:
-   [x] inverse of rhoi and rhoj can be precomputed in one loop
-   [x] scale!
-   [x] check computePressure, deltaRho seems to be wrong
-   [x] change grid size to somewhat like: 32, 16, 16
-   [x] mass = 0.001 does not work, 1.0 is better.
-       find a suitable value for mass! if rho0 is 1000 is 1000 a good value?
-   [ ] missing optimization
-       // the distance between two particles ought to be passed to computeDensity
-       Particle* SPH::evaluateNeighbor(
-   [ ] get rid of sqrt in CFL condition check
-   [ ] inverse rho computation in computeDensity does not make sense
-
-*/
-
-
-
+// Chau Intro...
+// Change unidades? Maybe [km/s pc M_sun Myr]...
 
 SPH::SPH()
  : mParticleCount(0),
@@ -431,8 +38,8 @@ SPH::SPH()
    mAngularMomentumTotal(vec3(0.0f, 0.0f, 0.0f))
 {
    // grid
-   float h = 3.34f;  // OG = 3.34
-   mSimulationScale = 0.004f;  // OG = 4e-3
+   float h = 0.1f;  // OG = 3.34
+   mSimulationScale = 1.0f;  // OG = 4e-3
    mSimulationScaleInverse = 1.0f / mSimulationScale;
    mH = h;
    mH2 = pow(h, 2);
@@ -443,7 +50,7 @@ SPH::SPH()
    mHScaled6 = pow(h * mSimulationScale, 6);
    mHScaled9 = pow(h * mSimulationScale, 9);
    mParticleCount = 16 * 1024;
-   mGridCellsX = 32;
+   mGridCellsX = 32;  // OG 32, why?
    mGridCellsY = 32;
    mGridCellsZ = 32;
    mGridCellCount = mGridCellsX * mGridCellsY * mGridCellsZ;
@@ -452,26 +59,19 @@ SPH::SPH()
    mMaxY = mCellSize * mGridCellsY;
    mMaxZ = mCellSize * mGridCellsZ;
 
-   // Queremos fijar un t de simu:
-   // t_sim = N_step * delta_step;
-   // Luego, buscamos la menor cant de N_steps sin romper el sistema
-   // i.e. no se "rompe" la energía. ¿Qué pasa si aumentamos el "CflLimit"?
-   float time_simu = 1.0f;  // Por ejemplo
-   mTimeStep = 0.001f;  // Esto hay que modificar
-   totalSteps = (int)round(time_simu/mTimeStep);  // Esto sale de los otros 2 params
+   float time_simu = 10.0f;  // 1 Myr?
+   mTimeStep = 0.001f;
+   totalSteps = (int)round(time_simu/mTimeStep);
 
    // physics
-   mRho0 = 1.0f;  // OG = 1e+4
-   mStiffness = 1.0f;  // OG = 0.5
+   mRho0 = 0.1f;  // Check qué debería ser para el H_1 + He_2 pristino...
+   mStiffness = 0.1f;  // idk
    mGravity = vec3(0.0f, 0.0f, 0.0f);
-   mViscosityScalar = 10.0f;  // OG = 1.; 1e+3 == nice disk formation (!!!)
-   //mTimeStep = 0.0042f;
-   mDamping = 0.001f;  // OG = 0.75, pero no queremos que reboten... ("afuera" => escape...)
+   mViscosityScalar = 10.0f;  // 1e+2~3 == nice disk formation (!!!)
+   mDamping = 0.001f;  // Deberíamos "tirar" las que se escpaen...
 
-   // float x = (1000.0f / (float)mParticleCount) * 2.0f;
-   // printf("%f\n", x);
-   float mass = 0.1f * 10.;  // OG = 0.01
-   mCflLimit = 1000.0f;  // OG = 100.0
+   float mass = 1.0f;  // Cada * = 1 M_sun (Pero orig son celdas de gas...)
+   mCflLimit = 10000.0f;  // Esto no debería existir...
    mCflLimit2 = mCflLimit * mCflLimit;
 
    // smoothing kernels
@@ -479,13 +79,14 @@ SPH::SPH()
    mKernel2Scaled = -45.0f / (M_PI * mHScaled6);
    mKernel3Scaled = -mKernel2Scaled;
 
-   // we do not examine a particle against more than 32 other particles
-   mExamineCount = 32; // 8?
+   // Valor fiducial = 32
+   mExamineCount = 32;
 
    mSrcParticles = new Particle[mParticleCount];
    mVoxelIds= new int[mParticleCount];
    mVoxelCoords= new vec3i[mParticleCount];
 
+   // Para difs masas (estaria bueno ver que onda...)
    for (int i = 0; i < mParticleCount; i++)
    {
       mSrcParticles[i].mMass = mass;
@@ -493,10 +94,11 @@ SPH::SPH()
 
    mGrid = new QList<Particle*>[mGridCellCount];
 
+   // Horrible...
    mNeighbors = new Particle*[mParticleCount*mExamineCount];
    mNeighborDistancesScaled = new float[mParticleCount*mExamineCount];
 
-   // randomize particle start positions
+   // randomize particle start positions -> Cambiar...
    // initParticlePositionsRandom();
    initParticlePolitionsSphere();
 }
@@ -608,8 +210,6 @@ void SPH::step()
 
    // compute density
    //    we only compute interactions with 32 particles.
-   //    this number is somewhat arbitrary, 8 or 16 would work, too but
-   //    it might not look too convincing.
    //    -> compute the interaction and the physics (with these 32 particles)
    t.start();
    // #pragma omp parallel for
@@ -693,7 +293,7 @@ void SPH::stopSimulation()
 }
 
 
-
+// Sobra... -> Cambiar por otras cond inic
 void SPH::initParticlePositionsRandom()
 {
    srand(QDateTime::currentMSecsSinceEpoch() % 1000);
@@ -734,7 +334,9 @@ void SPH::initParticlePositionsRandom()
 
 void SPH::initParticlePolitionsSphere()
 {
-   srand(QDateTime::currentMSecsSinceEpoch() % 1000);
+   // Fix seed:
+   //srand(QDateTime::currentMSecsSinceEpoch() % 1000);
+   srand(42);
 
    float dist = 0.0f;
 
@@ -749,14 +351,13 @@ void SPH::initParticlePolitionsSphere()
       mMaxZ * 0.5f
    );
 
-   float radius = 15.0f;
+   float radius = 2.0f;
    float phi;  // El ang acimutal para la v_tangencial. (atan2(y,x))
    float v_x_inic, v_y_inic, v_z_inic;  // El hdp puso a y como la comp vertical...
                               // (no quiero v_inic en "z" (que aca es "y"))
 
-   int a = mParticleCount;  // * 0.95f;
+   int a = mParticleCount;
 
-   // Fix seed?
    for (int i = 0; i < a; i++)
    {
       do
@@ -781,19 +382,14 @@ void SPH::initParticlePolitionsSphere()
       while (dist > radius);
 
       mSrcParticles[i].mPosition.set(x, y, z);
-      //mSrcParticles[i].mVelocity.set(0, 0, 0);
-      // Esto hace que partan del reposo. Estaria bueno
-      // que arranquen con un poquito de momento angular...
-      // e.g. v_rot = (r - r_0) * [x*-sin(phi) + y*cos(phi)] (d_phi 3D)
       phi = atan2(z - mMaxZ * 0.5f, x - mMaxX * 0.5f);  // Acomodar por el centro de la esfera!
-      v_x_inic = 3.2f * pow(dist + mHScaled*0.5, -0.5) * -sin(phi);  // L ~ r (!) -> Check
-      v_z_inic = 3.2f * pow(dist + mHScaled*0.5, -0.5) * cos(phi);
+      v_x_inic = 20.0f * pow(dist + mHScaled*0.5, -0.5) * -sin(phi);  // L ~ r (!) -> Check
+      v_z_inic = 20.0f * pow(dist + mHScaled*0.5, -0.5) * cos(phi);
       // Some random movements on "y" (z)
       v_y_inic = ((rand() / (float)RAND_MAX) * 0.5f) - 0.25f;
       mSrcParticles[i].mVelocity.set(v_x_inic, v_y_inic, v_z_inic);
    }
 
-   // ground -> We don't need "ground"
 }
 
 
@@ -826,7 +422,7 @@ void SPH::voxelizeParticles()
       // the voxel size is 2h * 2h * 2h
       // to get the voxel just divide the coordinate by 2h
       // then convert this x, y, z index to a serial number
-      // between 0.. maximum number of voxels
+      // between 0 - maximum number of voxels
       int voxelX = (int)floor(pos.x * mHTimes2Inv);
       int voxelY = (int)floor(pos.y * mHTimes2Inv);
       int voxelZ = (int)floor(pos.z * mHTimes2Inv);
@@ -1099,30 +695,6 @@ Particle* SPH::evaluateNeighbor(
 
 void SPH::computeDensity(Particle* particle, Particle** neighbors, float* neighborDistances)
 {
-   // rho at a given point i is approximately equal to the sum of the masses
-   // at various points j (weighted by the weighting function W)
-   //
-   //    density = (sum of the masses of nearby points * W(r - r , h) )
-   //                                                           j
-   //    W: smoothing kernel W
-   //
-   //    if (distance is greater than h return w = 0)
-   //    else
-   //
-   //              315
-   //    w =  ------------- ( h^2 - || r - r ||^2 )^3
-   //         64 * PI * h^9                 b
-   //
-   //    || vector || = length of a vector
-   //    || vector ||^2 = length of a vector without sqrt
-   //                   = x * x + y * y + z * z
-   //                   = dot(v, v)
-   //                   = dot(v1, v2) =  v1.x * v2.x + v1.y * v2.y + v1.z * v2.z
-   //                   = dot(v, v) = v.x * v.x + v.y * v.y + v.z * v.z
-   //                   = length(v) = sqrt( v.x * v.x + v.y * v.y + v.z * v.z )
-   //                   => length(v)^2 = dot(v,v)
-
-
    float density = 0.0f;
    float mass = 0.0f;
    vec3 pos = particle->mPosition;
@@ -1155,8 +727,6 @@ void SPH::computeDensity(Particle* particle, Particle** neighbors, float* neighb
          }
          else
          {
-            // ( h^2 - ||r - r ||^2 )^3
-            //                b
             // the dot product is not used here since it's not properly scaled
             rightPart = (mHScaled2 - (distanceScaled * distanceScaled));
             rightPart = (rightPart * rightPart * rightPart);
@@ -1184,9 +754,6 @@ void SPH::computeDensity(Particle* particle, Particle** neighbors, float* neighb
 
 void SPH::computePressure(Particle* particle)
 {
-   // pressure p = k(rho - rho0)
-   // pressure is the difference between rho and rho (the resting potential)
-
    // rho0: resting density
    float deltaRho = particle->mDensity - mRho0;
    float p = mStiffness * deltaRho;
@@ -1196,31 +763,6 @@ void SPH::computePressure(Particle* particle)
 
 void SPH::computeAcceleration(Particle* p, Particle** neighbors, float* neighborDistances)
 {
-   // pressure gradient
-   //
-   //    (1)
-   //
-   //    pressure gradient (divided by rho ) at a given point i is
-   //                                     i
-   //    approximately equal to
-   //                                                     p              p
-   //                                                      i              j
-   //    the sum of the masses at various points j  *  --------  +    --------
-   //                                                   rho  ^2        rho  ^2
-   //                                                      i              j
-   //
-   //    (2)
-   //                                                     __
-   //    multiplied by the gradient of a smoothing kernel \/W
-   //
-   //    The gradient is a vector; therefore this whole expression is a
-   //    vector value.
-   //                                                  r - r
-   //       __       -45                                    b
-   //       \/W =  -------- * (h - ||r - r  ||)^2 * ------------
-   //              PI * h^6               b         || r - r  ||
-   //                                                       b
-
 
    // viscosity term
    //
@@ -1235,22 +777,6 @@ void SPH::computeAcceleration(Particle* p, Particle** neighbors, float* neighbor
    //        rho      multiplied by the velocity between two points i and j
    //           i     divided by the pressure of j                     __
    //                 multiplied by the laplacian of a smoothin kernel \/^2W
-   //
-   //
-   //     that is:
-   //
-   //               (3)
-   //                | starting here
-   //                |
-   //                        v    v
-   //         u               j -  i   __
-   //        ---- * SUM  m * ------- * \/^2W
-   //        rho     j    j    rho
-   //           i                 j
-   //
-   //        __         45
-   //        \/^2W = -------- * (h - ||r - r  ||)
-   //                PI * h^6               b
 
    Particle* neighbor = 0;
    float distanceToNeighborScaled = 0.0f;
@@ -1272,17 +798,18 @@ void SPH::computeAcceleration(Particle* p, Particle** neighbors, float* neighbor
    vec3 rMinusRj;
    vec3 rMinusRjScaled;
 
-   // pressure gradient..
+   // pressure gradient...
    vec3 pressureGradient(0.0f, 0.0f, 0.0f);
    vec3 pressureGradientContribution;
 
-   // ..and viscous term
+   // ...and viscous term
    vec3 viscousTerm(0.0f, 0.0f, 0.0f);
    vec3 viscousTermContribution;
 
    // are added to the final acceleration
    vec3 acceleration(0.0f, 0.0f, 0.0f);
 
+   // Acaso llama a cada rato al "neighbor count" o se entiende que es un numero fijo?
    for (int neighborIndex = 0; neighborIndex < p->mNeighborCount; neighborIndex++)
    {
       neighbor = neighbors[neighborIndex];
@@ -1296,14 +823,6 @@ void SPH::computeAcceleration(Particle* p, Particle** neighbors, float* neighbor
       mj = neighbor->mMass;
 
       // pressure gradient
-      //
-      // (2)
-      //
-      //    r - r
-      //         j
-      // ------------
-      // || r - r  ||
-      //         j
       rMinusRj = (r - rj);
       rMinusRjScaled = rMinusRj * mSimulationScale;
       distanceToNeighborScaled = neighborDistances[neighborIndex];
@@ -1320,12 +839,6 @@ void SPH::computeAcceleration(Particle* p, Particle** neighbors, float* neighbor
       centerPart = centerPart * centerPart;
       pressureGradientContribution *= centerPart;
 
-      // (1)
-      //      p          p
-      //       i          j
-      // m  * -------- + --------
-      //  j   rho  ^2    rho  ^2
-      //         i          j
       float factor = mj * piDivRhoi2 * (pj * rhojInv2);
       pressureGradientContribution *= factor;
 
@@ -1334,14 +847,6 @@ void SPH::computeAcceleration(Particle* p, Particle** neighbors, float* neighbor
 
 
       // viscosity
-      //
-      // (3)
-      //
-      //     v    v
-      //      j -  i
-      // m * -------
-      //  j    rho
-      //          j
       viscousTermContribution = vj - vi;
       viscousTermContribution *= rhojInv;
       viscousTermContribution *= mj;
@@ -1366,19 +871,13 @@ void SPH::computeAcceleration(Particle* p, Particle** neighbors, float* neighbor
    // New vecs (grav):
    vec3 gravityTerm(0.0f, 0.0f, 0.0f);
    vec3 gravityTermContribution;
-   /* Necesito masa y la constante de gravitacion G (!!)
-   Don't forget about the softening!!!
-   OG es ~10^-11, pero quiero efectos aumentados
-   para ver como funca (2 blobs de agua no sienten atraccion grav en la Tierra...)
-   cada orden de mag => aumentar la masa de estos blobs. Be careful con la
-   implementacion fisica de estos valores y la divergencia de la velocidad con un Euler
-   basico... */
-   float mGravConstant = 6.7e-4f;  // def como mGravConstant aparte?
-   float softening = mHScaled * 0.5;  // mHScaled or mH?
+   // Maybe def una cte global? (G y softening)
+   float mGravConstant = 4.3009e-3f;  // En pc (km/s)^2 / M_sun
+   float softening = mHScaled * 0.5;
    float distance_ij3;  // Needed...
    // LASTLY: add a point-mass accel @ the center (e.g. central Black-Hole/NSC)
    // *once per particle. acc = -G M /r^3 (r^, porque apunta al centro)
-   float central_mass = 100.0f;  // Who knows... Tenemos que acomodar las unidades.
+   float central_mass = 1e+5f;  // Who knows...
    vec3 r_cetral_mass(mMaxX * 0.5f,
                      mMaxY * 0.5f,
                      mMaxZ * 0.5f);  // La posicion del BH (idem visualizacion)
@@ -1393,7 +892,6 @@ void SPH::computeAcceleration(Particle* p, Particle** neighbors, float* neighbor
    acceleration += gravityTerm;
 
    // check CFL condition
-   
    float dot =
         acceleration.x * acceleration.x
       + acceleration.y * acceleration.y
@@ -1411,7 +909,6 @@ void SPH::computeAcceleration(Particle* p, Particle** neighbors, float* neighbor
    mPotentialEnergyTotal += -mGravConstant * central_mass * p->mMass / (rMinusRjScaled.length());
    // + softening);  // B: Without soft (i.e. without a Plummer equivalent)
 
-   // yay. done.
    p->mAcceleration = acceleration;
 }
 
@@ -1423,28 +920,22 @@ void SPH::integrate(Particle* p)
    vec3 velocity = p->mVelocity;
 
    // apply external forces
-   //acceleration += mGravity;  // Esto ya lo hacemos en el otro loop...
+   //acceleration += mGravity;  // Esto ya lo hacemos en el otro loop ¿Debería hacerlo acá por LF-KDK?
 
-   // semi-implicit Euler
    float posTimeStep = mTimeStep * mSimulationScaleInverse;
-   //vec3 newVelocity = velocity + (acceleration * mTimeStep);
-   //vec3 newPosition = position + (newVelocity * posTimeStep);
-
    // LF-KDK:
-   // Claro, pero necesito calcular la aceleración de nuevo... ¿Only gravity?
- 
+   // Claro, pero necesito calcular la aceleración de nuevo... ¿Only gravity? 
    vec3 velocity_halfstep;
    velocity_halfstep = velocity + (acceleration * mTimeStep*0.5);
    vec3 newPosition = position + (velocity_halfstep * posTimeStep);
-
    // new half-accel grav (half-step)
    vec3 newAcceleration;
    // Chanchada, re def estas cosas acá...
    // Lo mejor sería handle de otra forma el loop accel + integration en el "step()".
-   float mGravConstant = 6.7e-4f;
+   float mGravConstant = 4.3009e-3f;  // En pc (km/s)^2 / M_sun
    float softening = mHScaled * 0.5;
    float distance_ij3;
-   float central_mass = 100.0f;
+   float central_mass = 1e+5f;  // Who knows...
    vec3 r_cetral_mass(mMaxX * 0.5f,
                      mMaxY * 0.5f,
                      mMaxZ * 0.5f);  // La posicion del BH (idem visualizacion)
@@ -1454,30 +945,29 @@ void SPH::integrate(Particle* p)
    newAcceleration = rMinusRjScaled/distance_ij3;
    newAcceleration *= -mGravConstant * central_mass;
 
-   // check CFL condition
-   
-   float dot =
-        newAcceleration.x * newAcceleration.x
-      + newAcceleration.y * newAcceleration.y
-      + newAcceleration.z * newAcceleration.z;
+   // check CFL condition (Horrible esto de repetir)
+   // float dot =
+   //      newAcceleration.x * newAcceleration.x
+   //    + newAcceleration.y * newAcceleration.y
+   //    + newAcceleration.z * newAcceleration.z;
 
-   bool limitExceeded = (dot > mCflLimit2);
-   if (limitExceeded)
-   {
-      float length = sqrt(dot);
-      float cflScale = mCflLimit / length;
-      newAcceleration *= cflScale;
-   }
+   // bool limitExceeded = (dot > mCflLimit2);
+   // if (limitExceeded)
+   // {
+   //    float length = sqrt(dot);
+   //    float cflScale = mCflLimit / length;
+   //    newAcceleration *= cflScale;
+   // }
 
    vec3 newVelocity = velocity_halfstep + (newAcceleration * mTimeStep);
 
    // let particles bounce back if they collide with the grid boundaries
-   handleBoundaryConditions(
-      position,
-      &newVelocity,
-      posTimeStep,
-      &newPosition
-   );
+   // handleBoundaryConditions(
+   //    position,
+   //    &newVelocity,
+   //    posTimeStep,
+   //    &newPosition
+   // );  // Actually, no...
 
    p->mVelocity = newVelocity;
    p->mPosition = newPosition;
@@ -1485,7 +975,6 @@ void SPH::integrate(Particle* p)
    p->mKineticEnergy = 0.5f * p->mMass * (newVelocity.x * newVelocity.x + newVelocity.y * newVelocity.y + newVelocity.z * newVelocity.z);
    // update angular momentum m * (r x v)
    // B: OJO, tiene que ser respecto a la masa central, no al origen...
-   //p->mAngularMomentum = p->mMass * (newPosition.cross(newVelocity));
    p->mAngularMomentum = p->mMass * (rMinusRj.cross(newVelocity));
    // B: It's negative because we are using "y" as the vertical. Como las v_inic (rot) las def según
    // (x, z) => ^x X ^z = -^y...
