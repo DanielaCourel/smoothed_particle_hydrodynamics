@@ -1453,6 +1453,7 @@ void SPH::integrate(Particle* p)
    distance_ij3 = pow((rMinusRjScaled.length() + softening), 3);
    newAcceleration = rMinusRjScaled/distance_ij3;
    newAcceleration *= -mGravConstant * central_mass;
+
    // check CFL condition
    
    float dot =
