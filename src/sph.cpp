@@ -49,7 +49,7 @@ SPH::SPH()
    mHScaled6 = pow(h * mSimulationScale, 6);
    mHScaled9 = pow(h * mSimulationScale, 9);  // Creo que está bien mantener estos floats así
    // ¿Pero no conviene definirlos como constantes?
-   mParticleCount = 4 * 1024;
+   mParticleCount = 16 * 1024;
    mGridCellsX = 32;  // OG 32...
    mGridCellsY = 32;
    mGridCellsZ = 32;
@@ -59,15 +59,15 @@ SPH::SPH()
    mMaxY = mCellSize * mGridCellsY;
    mMaxZ = mCellSize * mGridCellsZ;
 
-   float time_simu = 10.0f;  // 1 Myr?
-   mTimeStep = 0.0001f;
+   float time_simu = 1.0f;  // [Myr]
+   mTimeStep = 0.001f;
    totalSteps = (int)round(time_simu/mTimeStep);
 
    // physics
    mRho0 = 0.1f;  // Check qué debería ser para el H_1 + He_2 pristino...
    mStiffness = 0.1f;  // idk
    mGravity = vec3(0.0f, 0.0f, 0.0f);
-   mViscosityScalar = 10.0f;  // 1e+2~3 == nice disk formation (!!!)
+   mViscosityScalar = 1.0f;  // 1e+1~2 == nice disk formation (!!!)
    mDamping = 0.001f;  // Deberíamos "tirar" las que se escapen (En vez de checkear boundaries...)
    // Deberíamos definir acá la const de grav, el softening, la masa central y su pos?
    mGravConstant = 4.3009e-3f;  // En pc (km/s)^2 / M_sun
