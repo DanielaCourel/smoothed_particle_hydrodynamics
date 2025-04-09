@@ -40,7 +40,7 @@ Q_OBJECT
 
       float getInteractionRadius2() const;
 
-      QList<Particle*>* getGrid();
+      QList<uint16_t>* getGrid();
 
       float getCellSize() const;
 
@@ -101,16 +101,16 @@ protected:
       void findNeighbors(
          Particle *p,
          int particleIndex,
-         Particle** neighbors,
+         uint16_t* neighbors,
          int voxelX,
          int voxelY,
          int voxelZ
       );
 
       // physics
-      void computeDensity(Particle *p, Particle** neighbors, float* distances);
+      void computeDensity(Particle *p, uint16_t* neighbors, float* distances);
       void computePressure(Particle *p);
-      void computeAcceleration(Particle *p, Particle** neighbors, float* distances);
+      void computeAcceleration(Particle *p, uint16_t* neighbors, float* distances);
       void integrate(Particle *p);
 
 
@@ -171,8 +171,8 @@ protected:
       float mHTimes2;
       float mHTimes2Inv;
 
-      QList<Particle*>* mGrid;
-      Particle** mNeighbors;
+      QList<uint16_t>* mGrid;
+      uint16_t* mNeighbors;
       float* mNeighborDistancesScaled;
 
       int totalSteps;

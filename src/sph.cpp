@@ -101,22 +101,25 @@ SPH::SPH()
       mSrcParticles[i].mMass = mass;
    }
 
-   mGrid = new QList<Particle*>[mGridCellCount];
+   mGrid = new QList<uint16_t>[mGridCellCount];
 
-   // ??
-   mNeighbors = new Particle*[mParticleCount*mExamineCount];
+   mNeighbors = new uint16_t[mParticleCount*mExamineCount];
    mNeighborDistancesScaled = new float[mParticleCount*mExamineCount];
-   // Highly mejorable
 
    // randomize particle start positions -> Cambiar por orta config...
    // initParticlePositionsRandom();
    initParticlePolitionsSphere();
 }
 
-
 SPH::~SPH()
 {
    stopSimulation();
+   delete[] mSrcParticles;
+   delete[] mVoxelIds;
+   delete[] mVoxelCoords;
+   delete[] mGrid;
+   delete[] mNeighbors;
+   delete[] mNeighborDistancesScaled;
    quit();
    wait();
 }
@@ -209,7 +212,7 @@ void SPH::step()
       const vec3i& voxel= mVoxelCoords[particleIndex];
 
       // neighbors for this particle
-      Particle** neighbors= &mNeighbors[particleIndex*mExamineCount];
+      uint16_t* neighbors= &mNeighbors[particleIndex*mExamineCount];
 
       // a) examine a local region of 2x2x2 voxels using the spatial index to
       //    look up the particles that we are going to examine
@@ -230,7 +233,7 @@ void SPH::step()
       Particle* particle = &mSrcParticles[particleIndex];
 
       // neighbors for this particle
-      Particle** neighbors= &mNeighbors[particleIndex*mExamineCount];
+      uint16_t* neighbors= &mNeighbors[particleIndex*mExamineCount];
       float* neighborDistances= &mNeighborDistancesScaled[particleIndex*mExamineCount];
 
       computeDensity(particle, neighbors, neighborDistances);
@@ -260,7 +263,7 @@ void SPH::step()
       Particle* particle = &mSrcParticles[particleIndex];
 
       // neighbors for this particle
-      Particle** neighbors= &mNeighbors[particleIndex*mExamineCount];
+      uint16_t* neighbors= &mNeighbors[particleIndex*mExamineCount];
       float* neighborDistances= &mNeighborDistancesScaled[particleIndex*mExamineCount];
 
       computeAcceleration(particle, neighbors, neighborDistances);
@@ -479,13 +482,13 @@ void SPH::voxelizeParticles()
    // put each particle into according voxel (sequential)
    for (int i = 0; i < mParticleCount; i++)
    {
-       Particle* particle = &mSrcParticles[i];
-       mGrid[ mVoxelIds[i] ].push_back(particle);
+       //holaxd
+       mGrid[ mVoxelIds[i] ].push_back(i);
    }
 }
 
 
-void SPH::findNeighbors(Particle* particle, int particleIndex, Particle** neighbors, int voxelX, int voxelY, int voxelZ)
+void SPH::findNeighbors(Particle* particle, int particleIndex, uint16_t* neighbors, int voxelX, int voxelY, int voxelZ)
 {
    float xOrientation = 0.0f;
    float yOrientation = 0.0f;
@@ -625,7 +628,7 @@ void SPH::findNeighbors(Particle* particle, int particleIndex, Particle** neighb
          // |     |     |     |     |     |     |     |
          // +-----+-----+-----+-----+-----+-----+-----+-----
 
-         const QList<Particle*>& voxel = mGrid[computeVoxelId(vxi, vyi, vzi)];
+         const QList<uint16_t>& voxel = mGrid[computeVoxelId(vxi, vyi, vzi)];
 
          if (!voxel.isEmpty())
          {
@@ -660,14 +663,15 @@ void SPH::findNeighbors(Particle* particle, int particleIndex, Particle** neighb
                if (nextIndex < 0 || nextIndex > voxel.length() - 1)
                   break;
 
-               Particle* neighbor = voxel[nextIndex];
+               uint16_t realIndex = voxel[nextIndex];
+               Particle* neighbor = &mSrcParticles[realIndex];
                i++;
 
                Particle* validNeighbor = evaluateNeighbor(particle, neighbor);
 
                if (validNeighbor)
                {
-                  neighbors[neighborIndex] = validNeighbor;
+                  neighbors[neighborIndex] = realIndex;
                   neighborIndex++;
                }
 
@@ -720,7 +724,7 @@ Particle* SPH::evaluateNeighbor(
 
 
 
-void SPH::computeDensity(Particle* particle, Particle** neighbors, float* neighborDistances)
+void SPH::computeDensity(Particle* particle, uint16_t* neighbors, float* neighborDistances)
 {
    float density = 0.0f;
    float mass = 0.0f;
@@ -730,7 +734,8 @@ void SPH::computeDensity(Particle* particle, Particle** neighbors, float* neighb
 
    for (int neighborIndex = 0; neighborIndex < particle->mNeighborCount; neighborIndex++)
    {
-      Particle* neighbor = neighbors[neighborIndex];
+      uint16_t realIndex = neighbors[neighborIndex];
+      Particle* neighbor = &mSrcParticles[realIndex];
 
       if (!neighbor)
          break;
@@ -791,7 +796,7 @@ void SPH::computePressure(Particle* particle)
 }
 
 
-void SPH::computeAcceleration(Particle* p, Particle** neighbors, float* neighborDistances)
+void SPH::computeAcceleration(Particle* p, uint16_t* neighbors, float* neighborDistances)
 {
 
    // viscosity term
@@ -848,7 +853,8 @@ void SPH::computeAcceleration(Particle* p, Particle** neighbors, float* neighbor
    // Acaso llama a cada rato al "neighbor count" o se entiende que es un numero fijo?
    for (int neighborIndex = 0; neighborIndex < p->mNeighborCount; neighborIndex++)
    {
-      neighbor = neighbors[neighborIndex];
+      uint16_t realIndex = neighbors[neighborIndex];
+      neighbor = &mSrcParticles[realIndex];
 
       pj = (neighbor->mDensity - mRho0) * mStiffness;  // One-liner...
       rhoj = neighbor->mDensity;
@@ -1185,7 +1191,7 @@ float SPH::getInteractionRadius2() const
 }
 
 
-QList<Particle *>* SPH::getGrid()
+QList<uint16_t>* SPH::getGrid()
 {
    return mGrid;
 }

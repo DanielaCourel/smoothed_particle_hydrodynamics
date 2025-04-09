@@ -175,7 +175,7 @@ void Visualization::drawVoxels()
    float cellSize = mSph->getCellSize();
    mSph->getGridCellCounts(x, y, z);
 
-   QList<Particle*>* grid = mSph->getGrid();
+   QList<uint16_t>* grid = mSph->getGrid();
 
    glBegin(GL_TRIANGLES);
 
