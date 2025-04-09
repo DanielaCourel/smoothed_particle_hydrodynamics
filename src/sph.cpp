@@ -24,6 +24,10 @@
 #include <fstream>
 #include <sys/stat.h>
 
+#ifndef M
+#define M 16
+#endif
+
 // Unidades: [km/s pc M_sun Myr]...
 // ¿Define a cada step estos valores?
 SPH::SPH()
@@ -49,7 +53,7 @@ SPH::SPH()
    mHScaled6 = pow(h * mSimulationScale, 6);
    mHScaled9 = pow(h * mSimulationScale, 9);  // Creo que está bien mantener estos floats así
    // ¿Pero no conviene definirlos como constantes?
-   mParticleCount = 16 * 1024;
+   mParticleCount = M * 1024;
    mGridCellsX = 32;  // OG 32...
    mGridCellsY = 32;
    mGridCellsZ = 32;
