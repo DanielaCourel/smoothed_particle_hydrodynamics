@@ -24,9 +24,8 @@
 #include <fstream>
 #include <sys/stat.h>
 
-// Chau Intro...
-// Change unidades? Maybe [km/s pc M_sun Myr]...
-
+// Unidades: [km/s pc M_sun Myr]...
+// ¿Define a cada step estos valores?
 SPH::SPH()
  : mParticleCount(0),
    mGridCellCount(0),
@@ -48,9 +47,10 @@ SPH::SPH()
    mHScaled  = h * mSimulationScale;
    mHScaled2 = pow(h * mSimulationScale, 2);
    mHScaled6 = pow(h * mSimulationScale, 6);
-   mHScaled9 = pow(h * mSimulationScale, 9);
+   mHScaled9 = pow(h * mSimulationScale, 9);  // Creo que está bien mantener estos floats así
+   // ¿Pero no conviene definirlos como constantes?
    mParticleCount = 16 * 1024;
-   mGridCellsX = 32;  // OG 32, why?
+   mGridCellsX = 32;  // OG 32...
    mGridCellsY = 32;
    mGridCellsZ = 32;
    mGridCellCount = mGridCellsX * mGridCellsY * mGridCellsZ;
@@ -59,7 +59,7 @@ SPH::SPH()
    mMaxY = mCellSize * mGridCellsY;
    mMaxZ = mCellSize * mGridCellsZ;
 
-   float time_simu = 10.0f;  // 1 Myr?
+   float time_simu = 1.0f;  // [Myr]
    mTimeStep = 0.001f;
    totalSteps = (int)round(time_simu/mTimeStep);
 
@@ -67,16 +67,21 @@ SPH::SPH()
    mRho0 = 0.1f;  // Check qué debería ser para el H_1 + He_2 pristino...
    mStiffness = 0.1f;  // idk
    mGravity = vec3(0.0f, 0.0f, 0.0f);
-   mViscosityScalar = 10.0f;  // 1e+2~3 == nice disk formation (!!!)
-   mDamping = 0.001f;  // Deberíamos "tirar" las que se escpaen...
+   mViscosityScalar = 1.0f;  // 1e+1~2 == nice disk formation (!!!)
+   mDamping = 0.001f;  // Deberíamos "tirar" las que se escapen (En vez de checkear boundaries...)
+   // Deberíamos definir acá la const de grav, el softening, la masa central y su pos?
+   mGravConstant = 4.3009e-3f;  // En pc (km/s)^2 / M_sun
+   mCentralMass = 1e+5f;  // As we wish
+   mCentralPos = vec3(mMaxX * 0.5f, mMaxY * 0.5f, mMaxZ * 0.5f);
+   mSoftening = mHScaled * 0.5;  // Ojo, se recomienda que sea = h...
 
-   float mass = 1.0f;  // Cada * = 1 M_sun (Pero orig son celdas de gas...)
+   float mass = 1.0f;  // Cada star = 1 M_sun (Pero orig son "part de gas"...)
    mCflLimit = 10000.0f;  // Esto no debería existir...
    mCflLimit2 = mCflLimit * mCflLimit;
 
    // smoothing kernels
-   mKernel1Scaled = 315.0f / (64.0f * M_PI * mHScaled9);
-   mKernel2Scaled = -45.0f / (M_PI * mHScaled6);
+   mKernel1Scaled = 315.0f / (64.0f * (float)(M_PI) * mHScaled9);
+   mKernel2Scaled = -45.0f / ((float)(M_PI) * mHScaled6);  // M_PI as float?
    mKernel3Scaled = -mKernel2Scaled;
 
    // Valor fiducial = 32
@@ -94,11 +99,12 @@ SPH::SPH()
 
    mGrid = new QList<Particle*>[mGridCellCount];
 
-   // Horrible...
+   // ??
    mNeighbors = new Particle*[mParticleCount*mExamineCount];
    mNeighborDistancesScaled = new float[mParticleCount*mExamineCount];
+   // Highly mejorable
 
-   // randomize particle start positions -> Cambiar...
+   // randomize particle start positions -> Cambiar por orta config...
    // initParticlePositionsRandom();
    initParticlePolitionsSphere();
 }
@@ -213,6 +219,8 @@ void SPH::step()
    //    -> compute the interaction and the physics (with these 32 particles)
    t.start();
    // #pragma omp parallel for
+
+   // Maybe se puede hacer durante el anterior loop?
    for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
    {
       Particle* particle = &mSrcParticles[particleIndex];
@@ -228,17 +236,21 @@ void SPH::step()
    // compute pressure
    t.start();
    // #pragma omp parallel for
-   for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
+
+   // Maybe se puede hacer durante el anterior loop?
+   /* for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
    {
       Particle* particle = &mSrcParticles[particleIndex];
 
       computePressure(particle);
-   }
+   } */ // Skip because now are one-liners
    timeComputePressure = t.nsecsElapsed() / 1000000;
 
    // compute acceleration
    t.start();
    // #pragma omp parallel for
+
+   // Maybe se puede hacer durante el anterior loop?
    for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
    {
       Particle* particle = &mSrcParticles[particleIndex];
@@ -254,13 +266,21 @@ void SPH::step()
    // integrate
    t.start();
    // #pragma omp parallel for
+
+   // Maybe se puede hacer durante el anterior loop? Ojo con el orden...
    for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
    {
       Particle* particle = &mSrcParticles[particleIndex];
 
       integrate(particle);
-      mKineticEnergyTotal += particle->mKineticEnergy;
-      mAngularMomentumTotal += particle->mAngularMomentum;
+      // Calc acá T y W del sistema (no guardar las energías en las Particles)
+
+      mKineticEnergyTotal += 0.5f * particle->mMass * particle->mVelocity.length2();
+      //mKineticEnergyTotal += particle->mKineticEnergy;
+      
+      mAngularMomentumTotal += (particle->mMass * \
+         (particle->mPosition - mCentralPos).cross(particle->mVelocity));
+      //mAngularMomentumTotal += particle->mAngularMomentum;
    }
    timeIntegrate = t.nsecsElapsed() / 1000000;
 
@@ -405,8 +425,9 @@ void SPH::clearGrid()
 
 void SPH::voxelizeParticles()
 {
-   omp_lock_t writelock;
-   omp_init_lock(&writelock);
+   // Esto sobre si no usamos OMP, no?
+   //omp_lock_t writelock;
+   //omp_init_lock(&writelock);
 
    clearGrid();
 
@@ -417,7 +438,6 @@ void SPH::voxelizeParticles()
 
       // compute a scalar voxel id from a position
       vec3 pos = particle->mPosition;
-
 
       // the voxel size is 2h * 2h * 2h
       // to get the voxel just divide the coordinate by 2h
@@ -622,6 +642,8 @@ void SPH::findNeighbors(Particle* particle, int particleIndex, Particle** neighb
 
             // TODO: that's neither fast no a good idea
             //       if there's only 1 particle nearby, the code below is pretty pointless
+
+            // B: OJO CON ESTE RAND, QUE SE LLAMA MUCHÍSIMO
             particleOffset = rand() % voxel.length();
             particleIterateDirection = (particleIndex % 2) ? -1 : 1;
 
@@ -662,6 +684,7 @@ void SPH::findNeighbors(Particle* particle, int particleIndex, Particle** neighb
 }
 
 
+// ??
 Particle* SPH::evaluateNeighbor(
    Particle* current,
    Particle* neighbor
@@ -742,22 +765,25 @@ void SPH::computeDensity(Particle* particle, Particle** neighbors, float* neighb
       }
    }
 
-   float inverseDensity = ((density > 0.0f) ? (1.0f / density) : 1.0f);
    particle->mDensity = density;
 
    // we'll need those for the acceleration evaluation later
    // that's why we precompute them now
-   particle->mDensityInverse = inverseDensity;
-   particle->mDensityInverse2 = inverseDensity * inverseDensity;
+
+   // B: Quizás es mejor calcularlo en donde lo necesitemos (achicar el tamaño del struct)
+
+   //float inverseDensity = ((density > 0.0f) ? (1.0f / density) : 1.0f);
+   //particle->mDensityInverse = inverseDensity;
+   //particle->mDensityInverse2 = inverseDensity * inverseDensity;
 }
 
-
+// Skip this... Calc the pressure on-the-fly, maybe change later (diff EoS)
 void SPH::computePressure(Particle* particle)
 {
    // rho0: resting density
-   float deltaRho = particle->mDensity - mRho0;
-   float p = mStiffness * deltaRho;
-   particle->mPressure = p;
+   // float deltaRho = particle->mDensity - mRho0;
+   // float p = mStiffness * deltaRho;
+   // particle->mPressure = p;
 }
 
 
@@ -781,9 +807,15 @@ void SPH::computeAcceleration(Particle* p, Particle** neighbors, float* neighbor
    Particle* neighbor = 0;
    float distanceToNeighborScaled = 0.0f;
 
-   float pi = p->mPressure;
-   float rhoiInv = p->mDensityInverse;
-   float rhoiInv2 = p->mDensityInverse2;
+   // OJO, hay muchas cosas que no guardamos dentro de partículas:
+   //float pi = p->mPressure;
+   float pi = (p->mDensity - mRho0) * mStiffness;  // One-liner...
+   //inverseDensity = ((density > 0.0f) ? (1.0f / density) : 1.0f);
+   //particle->mDensityInverse = inverseDensity;
+   //particle->mDensityInverse2 = inverseDensity * inverseDensity;
+   //float rhoiInv = 1.0f / p->mDensity;  // One-liner (if rho > 0, which should be the case...; add a "softening"?)
+   float rhoiInv = ((pi > 0.0f) ? (1.0f / pi) : 1.0f);  // Better?
+   float rhoiInv2 = rhoiInv * rhoiInv;
    float piDivRhoi2 = pi * rhoiInv2;
    vec3 r = p->mPosition;
    vec3 vi = p->mVelocity;
@@ -814,10 +846,11 @@ void SPH::computeAcceleration(Particle* p, Particle** neighbors, float* neighbor
    {
       neighbor = neighbors[neighborIndex];
 
-      pj = neighbor->mPressure;
+      pj = (neighbor->mDensity - mRho0) * mStiffness;  // One-liner...
       rhoj = neighbor->mDensity;
-      rhojInv = neighbor->mDensityInverse;
-      rhojInv2 = neighbor->mDensityInverse2;
+      //rhojInv = 1.0f / rhoj;  // One-liner ¿Why not this way @ 1st time?
+      rhojInv = ((rhoj > 0.0f) ? (1.0f / rhoj) : 1.0f);
+      rhojInv2 = rhojInv * rhojInv;
       rj = neighbor->mPosition;
       vj = neighbor->mVelocity;
       mj = neighbor->mMass;
@@ -871,21 +904,14 @@ void SPH::computeAcceleration(Particle* p, Particle** neighbors, float* neighbor
    // New vecs (grav):
    vec3 gravityTerm(0.0f, 0.0f, 0.0f);
    vec3 gravityTermContribution;
-   // Maybe def una cte global? (G y softening)
-   float mGravConstant = 4.3009e-3f;  // En pc (km/s)^2 / M_sun
-   float softening = mHScaled * 0.5;
    float distance_ij3;  // Needed...
    // LASTLY: add a point-mass accel @ the center (e.g. central Black-Hole/NSC)
    // *once per particle. acc = -G M /r^3 (r^, porque apunta al centro)
-   float central_mass = 1e+5f;  // Who knows...
-   vec3 r_cetral_mass(mMaxX * 0.5f,
-                     mMaxY * 0.5f,
-                     mMaxZ * 0.5f);  // La posicion del BH (idem visualizacion)
-   rMinusRj = (r - r_cetral_mass);
+   rMinusRj = (r - mCentralPos);
    rMinusRjScaled = rMinusRj * mSimulationScale;
-   distance_ij3 = pow((rMinusRjScaled.length() + softening), 3);
+   distance_ij3 = pow((rMinusRjScaled.length() + mSoftening), 3);
    gravityTermContribution = rMinusRjScaled/distance_ij3;
-   gravityTermContribution *= -mGravConstant * central_mass;
+   gravityTermContribution *= -mGravConstant * mCentralMass;
    gravityTerm += gravityTermContribution;  // Try it...
 
    // Updateo la gravedad:
@@ -905,8 +931,8 @@ void SPH::computeAcceleration(Particle* p, Particle** neighbors, float* neighbor
       acceleration *= cflScale;
    }
 
-   // Energía potencial sería G*Mcentral*m_i/r_i
-   mPotentialEnergyTotal += -mGravConstant * central_mass * p->mMass / (rMinusRjScaled.length());
+   // Energía potencial sería G * Mcentral * m_i/r_i
+   mPotentialEnergyTotal += -mGravConstant * mCentralMass * p->mMass / (rMinusRjScaled.length());
    // + softening);  // B: Without soft (i.e. without a Plummer equivalent)
 
    p->mAcceleration = acceleration;
@@ -932,32 +958,14 @@ void SPH::integrate(Particle* p)
    vec3 newAcceleration;
    // Chanchada, re def estas cosas acá...
    // Lo mejor sería handle de otra forma el loop accel + integration en el "step()".
-   float mGravConstant = 4.3009e-3f;  // En pc (km/s)^2 / M_sun
-   float softening = mHScaled * 0.5;
    float distance_ij3;
-   float central_mass = 1e+5f;  // Who knows...
-   vec3 r_cetral_mass(mMaxX * 0.5f,
-                     mMaxY * 0.5f,
-                     mMaxZ * 0.5f);  // La posicion del BH (idem visualizacion)
-   vec3 rMinusRj  = (newPosition - r_cetral_mass);
+   vec3 rMinusRj  = (newPosition - mCentralPos);
    vec3 rMinusRjScaled = rMinusRj * mSimulationScale;
-   distance_ij3 = pow((rMinusRjScaled.length() + softening), 3);
+   distance_ij3 = pow((rMinusRjScaled.length() + mSoftening), 3);
    newAcceleration = rMinusRjScaled/distance_ij3;
-   newAcceleration *= -mGravConstant * central_mass;
+   newAcceleration *= -mGravConstant * mCentralMass;
 
-   // check CFL condition (Horrible esto de repetir)
-   // float dot =
-   //      newAcceleration.x * newAcceleration.x
-   //    + newAcceleration.y * newAcceleration.y
-   //    + newAcceleration.z * newAcceleration.z;
-
-   // bool limitExceeded = (dot > mCflLimit2);
-   // if (limitExceeded)
-   // {
-   //    float length = sqrt(dot);
-   //    float cflScale = mCflLimit / length;
-   //    newAcceleration *= cflScale;
-   // }
+   // NO repito CFL condition...
 
    vec3 newVelocity = velocity_halfstep + (newAcceleration * mTimeStep);
 
@@ -967,15 +975,20 @@ void SPH::integrate(Particle* p)
    //    &newVelocity,
    //    posTimeStep,
    //    &newPosition
-   // );  // Actually, no...
+   // );  // B: Actually, no... Let them escape...
 
    p->mVelocity = newVelocity;
-   p->mPosition = newPosition;
+   p->mPosition = newPosition;  // Order matters?
+
+   // OJO: queremos achicar el struct. Calc la energy when needed...
+
    // update kinetic energy
-   p->mKineticEnergy = 0.5f * p->mMass * (newVelocity.x * newVelocity.x + newVelocity.y * newVelocity.y + newVelocity.z * newVelocity.z);
+   //p->mKineticEnergy = 0.5f * p->mMass * (newVelocity.x * newVelocity.x + newVelocity.y * newVelocity.y + newVelocity.z * newVelocity.z);
+
    // update angular momentum m * (r x v)
    // B: OJO, tiene que ser respecto a la masa central, no al origen...
-   p->mAngularMomentum = p->mMass * (rMinusRj.cross(newVelocity));
+   //p->mAngularMomentum = p->mMass * (rMinusRj.cross(newVelocity));
+
    // B: It's negative because we are using "y" as the vertical. Como las v_inic (rot) las def según
    // (x, z) => ^x X ^z = -^y...
 }
@@ -1246,28 +1259,3 @@ void SPH::setStiffness(float stiffness)
 {
    mStiffness = stiffness;
 }
-
-// Set & get grav and dens (to mod on the fly):
-float SPH::getGravConstant() const
-{
-   return mGravConstant;
-}
-
-
-void SPH::setGravConstant(float grav_constant)
-{
-   mGravConstant = grav_constant;
-}
-
-
-float SPH::getTargetDensity() const
-{
-   return mRho0;
-}
-
-
-void SPH::setTargetDensity(float rho_target)
-{
-   mRho0 = rho_target;
-}
-

@@ -10,6 +10,8 @@
 #include "vec3.h"
 #include "vec3i.h"
 
+// TO DO: int to int32?
+
 class Particle;
 
 class SPH : public QThread
@@ -59,13 +61,6 @@ Q_OBJECT
 
       float getCflLimit() const;
       void setCflLimit(float cflLimit);
-
-      // Quiero añadir para modificar la densidad del fluido y G:
-      float getGravConstant() const;
-      void setGravConstant(float grav_constant);
-
-      float getTargetDensity() const;
-      void setTargetDensity(float rho_target);
 
 
 public slots:
@@ -152,8 +147,8 @@ protected:
 
       unsigned int* mParticleIndices;
 
+      // ints de 32
       int mParticleCount;
-
       int mGridCellsX;
       int mGridCellsY;
       int mGridCellsZ;
@@ -209,6 +204,11 @@ protected:
       float mCflLimit2;
       // Gravity constant:
       float mGravConstant;
+      // Central mass (and pos):
+      float mCentralMass;
+      vec3 mCentralPos;
+      // Softening (force)
+      float mSoftening;
 
       // thread handling
       mutable QMutex mMutex;
