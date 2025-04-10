@@ -498,7 +498,7 @@ void SPH::findNeighbors(Particle* particle, int particleIndex, uint16_t* neighbo
    int y = 0;
    int z = 0;
 
-   int particleOffset = 0;
+   //int particleOffset = 0;
    int particleIterateDirection = 0;
    int neighborIndex = 0;
    bool enoughNeighborsFound = false;
@@ -651,13 +651,14 @@ void SPH::findNeighbors(Particle* particle, int particleIndex, uint16_t* neighbo
             //       if there's only 1 particle nearby, the code below is pretty pointless
 
             // B: OJO CON ESTE RAND, QUE SE LLAMA MUCHÍSIMO
-            particleOffset = rand() % voxel.length();
+            //particleOffset = rand() % voxel.length();  // ¿Y si no hay un random offset?
             particleIterateDirection = (particleIndex % 2) ? -1 : 1;
 
             int i = 0;
             while (true)
             {
-               int nextIndex = particleOffset + i * particleIterateDirection;
+               //int nextIndex = particleOffset + i * particleIterateDirection;
+               int nextIndex = i * particleIterateDirection;
 
                // leave if we're out out the voxel's bounds
                if (nextIndex < 0 || nextIndex > voxel.length() - 1)
