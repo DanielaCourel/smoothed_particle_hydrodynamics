@@ -99,7 +99,6 @@ protected:
 
       // neighbor localization
       void findNeighbors(
-         Particle *p,
          int particleIndex,
          uint16_t* neighbors,
          int voxelX,
@@ -108,15 +107,15 @@ protected:
       );
 
       // physics
-      void computeDensity(Particle *p, uint16_t* neighbors, float* distances);
-      void computePressure(Particle *p);
-      void computeAcceleration(Particle *p, uint16_t* neighbors, float* distances);
-      void integrate(Particle *p);
+      void computeDensity(int p, uint16_t* neighbors, float* distances);
+      void computePressure(int p);
+      void computeAcceleration(int p, uint16_t* neighbors, float* distances);
+      void integrate(int p);
 
 
       // helper functions
 
-      Particle *evaluateNeighbor(Particle *current, Particle *neighbor);
+      int evaluateNeighbor(int current, int neighbor);
 
       int computeVoxelId(int voxelX, int voxelY, int voxelZ);
 

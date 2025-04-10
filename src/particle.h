@@ -2,27 +2,21 @@
 #define PARTICLE_H
 
 #include "vec3.h"
+#include <vector>
 
 class Particle
 {
 public:
 
-   Particle();
+   Particle(size_t numParticles);
+   ~Particle() = default;
+   std::vector<float> mMass;
+   std::vector<float> mDensity;
+   std::vector<vec3> mPosition;
+   std::vector<vec3> mVelocity;
+   std::vector<vec3> mAcceleration;
+   std::vector<int> mNeighborCount;
 
-   vec3 mPosition;
-   vec3 mVelocity;
-   vec3 mAcceleration;
-   //vec3 mAngularMomentum;
-
-   float mMass;
-   float mDensity;
-   //float mDensityInverse;
-   //float mDensityInverse2;
-   //float mPressure;
-   //float mPotentialEnergy;
-   //float mKineticEnergy;
-
-   int mNeighborCount;
 };
 
 #endif // PARTICLE_H

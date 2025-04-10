@@ -151,9 +151,7 @@ void Visualization::drawParticles()
 
    for (int i = 0; i < count; i++)
    {
-      Particle* particle = &particles[i];
-
-      const vec3& pos = particle->mPosition;
+      const vec3& pos = particles->mPosition[i];
       glVertex3f(pos.x, pos.y, pos.z);
    }
 
