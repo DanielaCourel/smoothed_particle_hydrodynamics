@@ -10,8 +10,6 @@
 #include "vec3.h"
 #include "vec3i.h"
 
-// TO DO: int to int32?
-
 class Particle;
 
 class SPH : public QThread
@@ -103,7 +101,8 @@ protected:
          uint16_t* neighbors,
          int voxelX,
          int voxelY,
-         int voxelZ
+         int voxelZ,
+         float* distances
       );
 
       // physics
@@ -205,7 +204,8 @@ protected:
       float mGravConstant;
       // Central mass (and pos):
       float mCentralMass;
-      vec3 mCentralPos;
+      //vec3 mCentralPos;
+      float mCentralPos[3];
       // Softening (force)
       float mSoftening;
 

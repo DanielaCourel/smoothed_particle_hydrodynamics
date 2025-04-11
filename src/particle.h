@@ -12,9 +12,9 @@ public:
    ~Particle() = default;
    std::vector<float> mMass;
    std::vector<float> mDensity;
-   std::vector<vec3> mPosition;
-   std::vector<vec3> mVelocity;
-   std::vector<vec3> mAcceleration;
+   std::vector<float> mPosition;
+   std::vector<float> mVelocity;
+   std::vector<float> mAcceleration;
    std::vector<int> mNeighborCount;
 
 };
