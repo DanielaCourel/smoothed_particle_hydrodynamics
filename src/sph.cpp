@@ -25,7 +25,7 @@
 #include <sys/stat.h>
 
 #ifndef M
-#define M 16
+#define M 32
 #endif
 
 // Unidades: [km/s pc M_sun Myr]...
@@ -418,10 +418,6 @@ void SPH::clearGrid()
 
 void SPH::voxelizeParticles()
 {
-   // Esto sobre si no usamos OMP, no?
-   //omp_lock_t writelock;
-   //omp_init_lock(&writelock);
-
    clearGrid();
 
    // #pragma omp parallel for
@@ -454,12 +450,6 @@ void SPH::voxelizeParticles()
 
       int voxelId = computeVoxelId(voxelX, voxelY, voxelZ);
 
-      // the lock performs terribly! (~17ms instead of 3ms)
-      //      omp_set_lock(&writelock);
-      //      mGrid[voxelId].push_back(particle);
-      //      omp_unset_lock(&writelock);
-
-      // instead, remember the voxelId and put the particle in later
       mVoxelIds[i]= voxelId;
    }
 
@@ -488,41 +478,6 @@ void SPH::findNeighbors(int particleIndex, uint16_t* neighbors, int voxelX, int 
    bool enoughNeighborsFound = false;
 
    vec3 pos = mSrcParticles->mPosition[particleIndex];
-
-   // get voxel orientation within voxel
-   //
-   //
-   // 3d illustration
-   //
-   //    1 voxel:
-   //      ____________
-   //     /     /     /|
-   //    /     /     / |
-   //   +-----+-----+  |  the interaction radius of particle x may
-   //   |     |  x  |  |  reach into 7 other voxels
-   //   |     |     | /|  => 8 voxels to check including 'self'
-   //   +-----+-----+/ |
-   //   |     |     |  |
-   //   |     |     | /
-   //   +-----+-----+/
-   //
-   //   <---< h >--->
-   //
-   //
-   // 2d illustration of 1 slice
-   //
-   //    +-----+-----+-----+-----
-   //    |     |/////|/////|
-   //    |     |/////|/////|
-   //    +-----+-----+-----+-----
-   //    |     |////x|/////|
-   //    |     |/////|/////|
-   //    +-----+-----+-----+-----
-   //    |     |     |     |
-   //    |     |     |     |
-   //    +-----+-----+-----+-----
-   //    |     |     |     |
-   //    |     |     |     |
 
    // this gives us the relative position; i.e the orientation within a voxel
    xOrientation = pos.x - (voxelX * mHTimes2);
@@ -588,6 +543,10 @@ void SPH::findNeighbors(int particleIndex, uint16_t* neighbors, int voxelX, int 
    int vyi;
    int vzi;
 
+   // Para ahorrarse tirar randoms, entre 0 y 4~5 -> LCG?
+   int linear_cong_gen;
+   int almost_a_random = 0;  
+
    for (int voxelIndex = 0; voxelIndex < 8; voxelIndex++)
    {
       vxi = vx[voxelIndex];
@@ -601,41 +560,17 @@ void SPH::findNeighbors(int particleIndex, uint16_t* neighbors, int voxelX, int 
          && vzi > 0 && vzi < mGridCellsZ
       )
       {
-         // +-----+-----+-----+-----+-----+-----+-----+-----
-         // |     |     |     |     |     |     |     |
-         // |     |     |    0|   *1|     |     |     |
-         // +-----+-----+-----+-----+-----+-----+-----+-----
-         // |     |     | *  x|  * *|     |     |     |
-         // |     |     |  * 2| * *4|     |     |     |
-         // +-----+-----+-----+-----+-----+-----+-----+-----
-         // |     |     |     |     |     |     |     |
-         // |     |     |     |     |     |     |     |
-         // +-----+-----+-----+-----+-----+-----+-----+-----
 
          const QList<uint16_t>& voxel = mGrid[computeVoxelId(vxi, vyi, vzi)];
 
          if (!voxel.isEmpty())
          {
-            // randomize idea:
-            //
-            // for every voxel n
-            //
-            //    pick a random start particle within voxel n
-            //    randomly go up or down from this start particle
-            //    check if that particle is within the interaction radius
-            //    increment 'found counter'
-            //
-            //    if (32 particles found),
-            //       break
-            //
-            //    optimization: store dot product in order to avoid
-            //                  computing it twice
-
-            // TODO: that's neither fast no a good idea
-            //       if there's only 1 particle nearby, the code below is pretty pointless
-
-            // B: OJO CON ESTE RAND, QUE SE LLAMA MUCHÍSIMO
-            particleOffset = rand() % voxel.length();
+            // B: OJO CON ESTE RAND, QUE SE LLAMA MUCHÍSIMO -> 
+            // ParticleOffset va entre 0 y 4~5 en la grandísima mayoría -> LCG easy :)
+            linear_cong_gen = (1664525*(particleIndex + almost_a_random) + 1013904223) % 4294967296;
+            particleOffset = linear_cong_gen % voxel.length();  //rand() % voxel.length();
+            almost_a_random++;
+            //std::cout << particleOffset << "\n";
             particleIterateDirection = (particleIndex % 2) ? -1 : 1;
 
             int i = 0;
@@ -685,12 +620,6 @@ int SPH::evaluateNeighbor(
 
    if (current != neighbor)
    {
-      // we save the sqrt here and use mInteractionRadius2 (h^2) instead
-      // of mInteractionRadius
-      //
-      // float distance = sqrt(dot);
-      // if (distance < mInteractionRadius)
-
       vec3 dist = mSrcParticles->mPosition[current] - mSrcParticles->mPosition[neighbor];
       float dot = dist * dist;
 
@@ -757,15 +686,6 @@ void SPH::computeDensity(int particleIndex, uint16_t* neighbors, float* neighbor
    }
 
    mSrcParticles->mDensity[particleIndex] = density;
-
-   // we'll need those for the acceleration evaluation later
-   // that's why we precompute them now
-
-   // B: Quizás es mejor calcularlo en donde lo necesitemos (achicar el tamaño del struct)
-
-   //float inverseDensity = ((density > 0.0f) ? (1.0f / density) : 1.0f);
-   //particle->mDensityInverse = inverseDensity;
-   //particle->mDensityInverse2 = inverseDensity * inverseDensity;
 }
 
 // Skip this... Calc the pressure on-the-fly, maybe change later (diff EoS)
@@ -780,31 +700,12 @@ void SPH::computePressure(int particle)
 
 void SPH::computeAcceleration(int particleIndex, uint16_t* neighbors, float* neighborDistances)
 {
-
-   // viscosity term
-   //
-   //     u = a scalar coefficient that says how viscous is the fluid
-   //         small value => water
-   //         large value => sirup
-   //
-   //     the viscosity term is approximately
-   //
-   //         u
-   //        ----  *  the sum of the masses at various points j
-   //        rho      multiplied by the velocity between two points i and j
-   //           i     divided by the pressure of j                     __
-   //                 multiplied by the laplacian of a smoothin kernel \/^2W
-
    Particle* neighbor = 0;
    float distanceToNeighborScaled = 0.0f;
 
    // OJO, hay muchas cosas que no guardamos dentro de partículas:
    //float pi = p->mPressure;
    float pi = (mSrcParticles->mDensity[particleIndex] - mRho0) * mStiffness;  // One-liner...
-   //inverseDensity = ((density > 0.0f) ? (1.0f / density) : 1.0f);
-   //particle->mDensityInverse = inverseDensity;
-   //particle->mDensityInverse2 = inverseDensity * inverseDensity;
-   //float rhoiInv = 1.0f / p->mDensity;  // One-liner (if rho > 0, which should be the case...; add a "softening"?)
    float rhoiInv = ((pi > 0.0f) ? (1.0f / pi) : 1.0f);  // Better?
    float rhoiInv2 = rhoiInv * rhoiInv;
    float piDivRhoi2 = pi * rhoiInv2;
@@ -852,13 +753,8 @@ void SPH::computeAcceleration(int particleIndex, uint16_t* neighbors, float* nei
       distanceToNeighborScaled = neighborDistances[neighborIndex];
       pressureGradientContribution = rMinusRjScaled / distanceToNeighborScaled;
 
-      //   -45
-      // --------
-      // PI * h^6
       pressureGradientContribution *= mKernel2Scaled;
 
-      // (h - ||r - r  ||)^2
-      //             j
       float centerPart = (mHScaled - distanceToNeighborScaled);
       centerPart = centerPart * centerPart;
       pressureGradientContribution *= centerPart;
@@ -869,16 +765,11 @@ void SPH::computeAcceleration(int particleIndex, uint16_t* neighbors, float* nei
       // add pressure gradient contribution to pressure gradient
       pressureGradient += pressureGradientContribution;
 
-
       // viscosity
       viscousTermContribution = vj - vi;
       viscousTermContribution *= rhojInv;
       viscousTermContribution *= mj;
 
-      // (4)
-      //      45
-      //   -------- * (h - ||r - r  ||)
-      //   PI * h^6               b
       viscousTermContribution *= mKernel3Scaled;
       viscousTermContribution *= (mHScaled - distanceToNeighborScaled);
 
