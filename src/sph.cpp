@@ -69,15 +69,15 @@ SPH::SPH()
 
    // physics
    mRho0 = 0.1f;  // Check qué debería ser para el H_1 + He_2 pristino...
-   mStiffness = 0.1f;  // idk
+   mStiffness = 0.001f;  // idk
    mGravity = vec3(0.0f, 0.0f, 0.0f);
-   mViscosityScalar = 1.0f;  // 1e+1~2 == nice disk formation (!!!)
+   mViscosityScalar = 0.01f;  // 1e+1~2 == nice disk formation (!!!)
    mDamping = 0.001f;  // Deberíamos "tirar" las que se escapen (En vez de checkear boundaries...)
    // Deberíamos definir acá la const de grav, el softening, la masa central y su pos?
    mGravConstant = 4.3009e-3f;  // En pc (km/s)^2 / M_sun
    mCentralMass = 1e+5f;  // As we wish
    mCentralPos = vec3(mMaxX * 0.5f, mMaxY * 0.5f, mMaxZ * 0.5f);
-   mSoftening = mHScaled * 0.5;  // Ojo, se recomienda que sea = h...
+   mSoftening = mHScaled; // * 0.5;  // Ojo, se recomienda que sea = h...
 
    float mass = 1.0f;  // Cada star = 1 M_sun (Pero orig son "part de gas"...)
    mCflLimit = 10000.0f;  // Esto no debería existir...
@@ -267,14 +267,7 @@ void SPH::step()
    for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
    {
       integrate(particleIndex);
-      // Calc acá T y W del sistema (no guardar las energías en las Particles)
-
-      mKineticEnergyTotal += 0.5f * mSrcParticles->mMass[particleIndex] * mSrcParticles->mVelocity[particleIndex].length2();
-      //mKineticEnergyTotal += particle->mKineticEnergy;
-      
-      mAngularMomentumTotal += (mSrcParticles->mMass[particleIndex] * \
-         (mSrcParticles->mPosition[particleIndex] - mCentralPos).cross(mSrcParticles->mVelocity[particleIndex]));
-      //mAngularMomentumTotal += particle->mAngularMomentum;
+      // E & L a cargo de integrate
    }
    timeIntegrate = t.nsecsElapsed() / 1000000;
 
@@ -585,12 +578,21 @@ void SPH::findNeighbors(int particleIndex, uint16_t* neighbors, int voxelX, int 
                uint16_t realIndex = voxel[nextIndex];
                i++;
 
-               int validNeighbor = evaluateNeighbor(particleIndex, realIndex);
+               // Puedo hacer un "pseudo-unroll", probando 2 indices a la vez (!)
+               // WIP: Repetir exactamente lo de arriba con un "nextIndex2"
 
-               if (validNeighbor)
+               // Qué jijodebú el evaluate no debería ser una func aparte...
+               // (es todo un check...)
+               // int validNeighbor = evaluateNeighbor(particleIndex, realIndex);
+
+               if (particleIndex != realIndex)
                {
-                  neighbors[neighborIndex] = validNeighbor;
-                  neighborIndex++;
+                  vec3 pos_neighbor = mSrcParticles->mPosition[realIndex];
+                  if ((pos - pos_neighbor).length2() < mH2)
+                  {
+                     neighbors[neighborIndex] = realIndex;
+                     neighborIndex++;
+                  }
                }
 
                // leave if we have sufficient neighbor particles
@@ -779,8 +781,6 @@ void SPH::computeAcceleration(int particleIndex, uint16_t* neighbors, float* nei
 
    viscousTerm *= (mViscosityScalar * rhoiInv);
 
-   // potential optimization:
-   // multiplication with rhoiInv could be done here in just one go
    acceleration = viscousTerm - pressureGradient;
 
    // New vecs (grav):
@@ -813,10 +813,6 @@ void SPH::computeAcceleration(int particleIndex, uint16_t* neighbors, float* nei
       acceleration *= cflScale;
    }
 
-   // Energía potencial sería G * Mcentral * m_i/r_i
-   mPotentialEnergyTotal += -mGravConstant * mCentralMass * mSrcParticles->mMass[particleIndex] / (rMinusRjScaled.length());
-   // + softening);  // B: Without soft (i.e. without a Plummer equivalent)
-
    mSrcParticles->mAcceleration[particleIndex] = acceleration;
 }
 
@@ -826,6 +822,7 @@ void SPH::integrate(int particleIndex)
    vec3 acceleration = mSrcParticles->mAcceleration[particleIndex];
    vec3 position = mSrcParticles->mPosition[particleIndex];
    vec3 velocity = mSrcParticles->mVelocity[particleIndex];
+   float mass_here = mSrcParticles->mMass[particleIndex];
 
    // apply external forces
    //acceleration += mGravity;  // Esto ya lo hacemos en el otro loop ¿Debería hacerlo acá por LF-KDK?
@@ -837,19 +834,41 @@ void SPH::integrate(int particleIndex)
    velocity_halfstep = velocity + (acceleration * mTimeStep*0.5);
    vec3 newPosition = position + (velocity_halfstep * posTimeStep);
    // new half-accel grav (half-step)
-   vec3 newAcceleration;
-   // Chanchada, re def estas cosas acá...
-   // Lo mejor sería handle de otra forma el loop accel + integration en el "step()".
+   //vec3 newAcceleration; -> No hace falta...
    float distance_ij3;
-   vec3 rMinusRj  = (newPosition - mCentralPos);
-   vec3 rMinusRjScaled = rMinusRj * mSimulationScale;
+   vec3 rMinusRjScaled = (newPosition - mCentralPos) * mSimulationScale;
    distance_ij3 = pow((rMinusRjScaled.length() + mSoftening), 3);
-   newAcceleration = rMinusRjScaled/distance_ij3;
-   newAcceleration *= -mGravConstant * mCentralMass;
+   acceleration = (rMinusRjScaled/distance_ij3) * -mGravConstant * mCentralMass;
 
-   // NO repito CFL condition...
+   // Don't check CFL condition
+   // float dot =
+   //      acceleration.x * acceleration.x
+   //    + acceleration.y * acceleration.y
+   //    + acceleration.z * acceleration.z;
 
-   vec3 newVelocity = velocity_halfstep + (newAcceleration * mTimeStep);
+   // bool limitExceeded = (dot > mCflLimit2);
+   // if (limitExceeded)
+   // {
+   //    float length = sqrt(dot);
+   //    float cflScale = mCflLimit / length;
+   //    acceleration *= cflScale;
+   // }
+
+   vec3 newVelocity = velocity_halfstep + (acceleration * mTimeStep);
+
+   // Muchos NaNs... Skip them:
+   if (newVelocity.length2() > 0)
+   {
+      // Calc acá T, W y L del sistema (no guardar las energías en las Particles)
+      mKineticEnergyTotal += 0.5f * mass_here * newVelocity.length2();
+
+      // Energía potencial sería G * Mcentral * m_i/r_i
+      mPotentialEnergyTotal -= mGravConstant * mCentralMass * mass_here / distance_ij3;
+      // + softening);  // B: Without soft (i.e. without a Plummer equivalent)
+
+      mAngularMomentumTotal += (mass_here * (newPosition - mCentralPos).cross(newVelocity));
+
+   }
 
    // let particles bounce back if they collide with the grid boundaries
    // handleBoundaryConditions(
@@ -859,21 +878,9 @@ void SPH::integrate(int particleIndex)
    //    &newPosition
    // );  // B: Actually, no... Let them escape...
 
-
    mSrcParticles->mVelocity[particleIndex] = newVelocity;
    mSrcParticles->mPosition[particleIndex] = newPosition;
 
-   // OJO: queremos achicar el struct. Calc la energy when needed...
-
-   // update kinetic energy
-   //p->mKineticEnergy = 0.5f * p->mMass * (newVelocity.x * newVelocity.x + newVelocity.y * newVelocity.y + newVelocity.z * newVelocity.z);
-
-   // update angular momentum m * (r x v)
-   // B: OJO, tiene que ser respecto a la masa central, no al origen...
-   //p->mAngularMomentum = p->mMass * (rMinusRj.cross(newVelocity));
-
-   // B: It's negative because we are using "y" as the vertical. Como las v_inic (rot) las def según
-   // (x, z) => ^x X ^z = -^y...
 }
 
 
