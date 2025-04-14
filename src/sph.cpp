@@ -206,11 +206,10 @@ void SPH::step()
 
       // neighbors for this particle
       uint16_t* neighbors= &mNeighbors[particleIndex*mExamineCount];
+      // Calc 2 times dist a neighbors? Let's do it here:
+      float* neighborDistances= &mNeighborDistancesScaled[particleIndex*mExamineCount];
 
-      // a) examine a local region of 2x2x2 voxels using the spatial index to
-      //    look up the particles that we are going to examine
-      //    -> create a neighbor map based on the analaysis
-      findNeighbors(particleIndex, neighbors, voxel.x, voxel.y, voxel.z);
+      findNeighbors(particleIndex, neighbors, voxel.x, voxel.y, voxel.z, neighborDistances);
    }
    timeFindNeighbors = t.nsecsElapsed() / 1000000;
 
@@ -455,7 +454,7 @@ void SPH::voxelizeParticles()
 }
 
 
-void SPH::findNeighbors(int particleIndex, uint16_t* neighbors, int voxelX, int voxelY, int voxelZ)
+void SPH::findNeighbors(int particleIndex, uint16_t* neighbors, int voxelX, int voxelY, int voxelZ, float* neighborDistances)
 {
    float xOrientation = 0.0f;
    float yOrientation = 0.0f;
@@ -471,6 +470,8 @@ void SPH::findNeighbors(int particleIndex, uint16_t* neighbors, int voxelX, int 
    bool enoughNeighborsFound = false;
 
    vec3 pos = mSrcParticles->mPosition[particleIndex];
+   float dot;
+   float distance;
 
    // this gives us the relative position; i.e the orientation within a voxel
    xOrientation = pos.x - (voxelX * mHTimes2);
@@ -578,22 +579,49 @@ void SPH::findNeighbors(int particleIndex, uint16_t* neighbors, int voxelX, int 
                uint16_t realIndex = voxel[nextIndex];
                i++;
 
-               // Puedo hacer un "pseudo-unroll", probando 2 indices a la vez (!)
-               // WIP: Repetir exactamente lo de arriba con un "nextIndex2"
-
-               // Qué jijodebú el evaluate no debería ser una func aparte...
+               // Qué jijodebú el evaluate no debería ser una func aparte.
                // (es todo un check...)
                // int validNeighbor = evaluateNeighbor(particleIndex, realIndex);
 
                if (particleIndex != realIndex)
                {
                   vec3 pos_neighbor = mSrcParticles->mPosition[realIndex];
-                  if ((pos - pos_neighbor).length2() < mH2)
+                  // Aprovecho y cal la dist al vecino valido acá:
+                  dot = (pos - pos_neighbor).length2();
+                  if (dot < mH2)
                   {
+                     distance = sqrt(dot);
+                     //distance *= mSimulationScale;  // Sup 1...
+                     neighborDistances[neighborIndex] = distance;
                      neighbors[neighborIndex] = realIndex;
                      neighborIndex++;
                   }
                }
+               
+               // nextIndex2 (~unroll?)
+               // nextIndex++;
+
+               // // leave if we're out out the voxel's bounds
+               // if (nextIndex < 0 || nextIndex > voxel.length() - 1)
+               //    break;
+
+               // realIndex = voxel[nextIndex];
+               // i++;
+
+               // if (particleIndex != realIndex)
+               // {
+               //    vec3 pos_neighbor = mSrcParticles->mPosition[realIndex];
+               //    // Aprovecho y cal la dist al vecino valido acá:
+               //    dot = (pos - pos_neighbor).length2();
+               //    if (dot < mH2)
+               //    {
+               //       distance = sqrt(dot);
+               //       //distance *= mSimulationScale;  // Sup 1...
+               //       neighborDistances[neighborIndex] = distance;
+               //       neighbors[neighborIndex] = realIndex;
+               //       neighborIndex++;
+               //    }
+               // }
 
                // leave if we have sufficient neighbor particles
                enoughNeighborsFound = (neighborIndex > mExamineCount - 1);
@@ -620,18 +648,18 @@ int SPH::evaluateNeighbor(
 {
    int validNeighbor = 0;
 
-   if (current != neighbor)
-   {
-      vec3 dist = mSrcParticles->mPosition[current] - mSrcParticles->mPosition[neighbor];
-      float dot = dist * dist;
+   // if (current != neighbor)
+   // {
+   //    vec3 dist = mSrcParticles->mPosition[current] - mSrcParticles->mPosition[neighbor];
+   //    float dot = dist * dist;
 
-      // the dot product is unscaled and so is MH2;
-      // so there's no need to add any simulation scale here
-      if (dot < mH2)
-      {
-         validNeighbor = neighbor;
-      }
-   }
+   //    // the dot product is unscaled and so is MH2;
+   //    // so there's no need to add any simulation scale here
+   //    if (dot < mH2)
+   //    {
+   //       validNeighbor = neighbor;
+   //    }
+   // }
 
    return validNeighbor;
 }
@@ -645,6 +673,7 @@ void SPH::computeDensity(int particleIndex, uint16_t* neighbors, float* neighbor
    vec3 pos = mSrcParticles->mPosition[particleIndex];
    float w = 0.0f;
    float rightPart = 0.0f;
+   float distanceScaled;
 
    for (int neighborIndex = 0; neighborIndex < mSrcParticles->mNeighborCount[particleIndex]; neighborIndex++)
    {
@@ -658,14 +687,13 @@ void SPH::computeDensity(int particleIndex, uint16_t* neighbors, float* neighbor
          // add mass of neighbor
          mass = mSrcParticles->mMass[realIndex];
 
+         // B: Dist ahora lo hace find_neighbors
+         // vec3 dist = pos - mSrcParticles->mPosition[realIndex];
+         // float dot = dist.x * dist.x + dist.y * dist.y + dist.z * dist.z;
+         // float distance = sqrt(dot);
+         // float distanceScaled = distance * mSimulationScale;
+         distanceScaled = neighborDistances[neighborIndex];
          // apply smoothing kernel to mass
-         
-         vec3 dist = pos - mSrcParticles->mPosition[realIndex];
-         float dot = dist.x * dist.x + dist.y * dist.y + dist.z * dist.z;
-         float distance = sqrt(dot);
-         float distanceScaled = distance * mSimulationScale;
-         neighborDistances[neighborIndex] = distanceScaled;
-
          if (distanceScaled > mHScaled)
          {
             w = 0.0f;
@@ -891,95 +919,95 @@ void SPH::handleBoundaryConditions(
    vec3* newPosition
 )
 {
-   // x coord
-   if (newPosition->x < 0.0f)
-   {
-      vec3 normal(1, 0, 0);
-      float intersectionDistance = -position.x / newVelocity->x;
+   // // x coord
+   // if (newPosition->x < 0.0f)
+   // {
+   //    vec3 normal(1, 0, 0);
+   //    float intersectionDistance = -position.x / newVelocity->x;
 
-      applyBoundary(
-         position,
-         timeStep,
-         newPosition,
-         intersectionDistance,
-         normal,
-         newVelocity
-      );
-   }
-   else if (newPosition->x > mMaxX)
-   {
-      vec3 normal(-1, 0, 0);
-      float intersectionDistance = (mMaxX - position.x) / newVelocity->x;
+   //    applyBoundary(
+   //       position,
+   //       timeStep,
+   //       newPosition,
+   //       intersectionDistance,
+   //       normal,
+   //       newVelocity
+   //    );
+   // }
+   // else if (newPosition->x > mMaxX)
+   // {
+   //    vec3 normal(-1, 0, 0);
+   //    float intersectionDistance = (mMaxX - position.x) / newVelocity->x;
 
-      applyBoundary(
-         position,
-         timeStep,
-         newPosition,
-         intersectionDistance,
-         normal,
-         newVelocity
-      );
-   }
+   //    applyBoundary(
+   //       position,
+   //       timeStep,
+   //       newPosition,
+   //       intersectionDistance,
+   //       normal,
+   //       newVelocity
+   //    );
+   // }
 
-   // y coord
-   if (newPosition->y < 0.0f)
-   {
-      vec3 normal(0, 1, 0);
-      float intersectionDistance = -position.y / newVelocity->y;
+   // // y coord
+   // if (newPosition->y < 0.0f)
+   // {
+   //    vec3 normal(0, 1, 0);
+   //    float intersectionDistance = -position.y / newVelocity->y;
 
-      applyBoundary(
-         position,
-         timeStep,
-         newPosition,
-         intersectionDistance,
-         normal,
-         newVelocity
-      );
-   }
-   else if (newPosition->y > mMaxY)
-   {
-      vec3 normal(0, -1, 0);
-      float intersectionDistance = (mMaxY - position.y) / newVelocity->y;
+   //    applyBoundary(
+   //       position,
+   //       timeStep,
+   //       newPosition,
+   //       intersectionDistance,
+   //       normal,
+   //       newVelocity
+   //    );
+   // }
+   // else if (newPosition->y > mMaxY)
+   // {
+   //    vec3 normal(0, -1, 0);
+   //    float intersectionDistance = (mMaxY - position.y) / newVelocity->y;
 
-      applyBoundary(
-         position,
-         timeStep,
-         newPosition,
-         intersectionDistance,
-         normal,
-         newVelocity
-      );
-   }
+   //    applyBoundary(
+   //       position,
+   //       timeStep,
+   //       newPosition,
+   //       intersectionDistance,
+   //       normal,
+   //       newVelocity
+   //    );
+   // }
 
-   // z coord
-   if (newPosition->z < 0.0f)
-   {
-      vec3 normal(0, 0, 1);
-      float intersectionDistance = -position.z / newVelocity->z;
+   // // z coord
+   // if (newPosition->z < 0.0f)
+   // {
+   //    vec3 normal(0, 0, 1);
+   //    float intersectionDistance = -position.z / newVelocity->z;
 
-      applyBoundary(
-         position,
-         timeStep,
-         newPosition,
-         intersectionDistance,
-         normal,
-         newVelocity
-      );
-   }
-   else if (newPosition->z > mMaxZ)
-   {
-      vec3 normal(0, 0, -1);
-      float intersectionDistance = (mMaxZ - position.z) / newVelocity->z;
+   //    applyBoundary(
+   //       position,
+   //       timeStep,
+   //       newPosition,
+   //       intersectionDistance,
+   //       normal,
+   //       newVelocity
+   //    );
+   // }
+   // else if (newPosition->z > mMaxZ)
+   // {
+   //    vec3 normal(0, 0, -1);
+   //    float intersectionDistance = (mMaxZ - position.z) / newVelocity->z;
 
-      applyBoundary(
-         position,
-         timeStep,
-         newPosition,
-         intersectionDistance,
-         normal,
-         newVelocity
-      );
-   }
+   //    applyBoundary(
+   //       position,
+   //       timeStep,
+   //       newPosition,
+   //       intersectionDistance,
+   //       normal,
+   //       newVelocity
+   //    );
+   // }
 }
 
 
@@ -993,20 +1021,20 @@ void SPH::applyBoundary(
 )
 {
    
-   vec3 intersection = position + (*newVelocity * intersectionDistance);
+   // vec3 intersection = position + (*newVelocity * intersectionDistance);
 
-   float dotProduct =
-        newVelocity->x * normal.x
-      + newVelocity->y * normal.y
-      + newVelocity->z * normal.z;
+   // float dotProduct =
+   //      newVelocity->x * normal.x
+   //    + newVelocity->y * normal.y
+   //    + newVelocity->z * normal.z;
 
-   vec3 reflection = *newVelocity - (normal * dotProduct * 2.0f);
+   // vec3 reflection = *newVelocity - (normal * dotProduct * 2.0f);
 
-   float remaining = timeStep - intersectionDistance;
+   // float remaining = timeStep - intersectionDistance;
 
-   // apply boundaries
-   *newVelocity = reflection;
-   *newPosition = intersection + reflection * (remaining * mDamping);
+   // // apply boundaries
+   // *newVelocity = reflection;
+   // *newPosition = intersection + reflection * (remaining * mDamping);
 }
 
 

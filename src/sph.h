@@ -103,7 +103,8 @@ protected:
          uint16_t* neighbors,
          int voxelX,
          int voxelY,
-         int voxelZ
+         int voxelZ,
+         float* distances
       );
 
       // physics
