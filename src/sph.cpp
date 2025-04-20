@@ -26,6 +26,7 @@
 
 #ifndef M
 #define M 32
+#define K 32
 #endif
 
 // Unidades: [km/s pc M_sun Myr]...
@@ -162,6 +163,7 @@ void SPH::run()
    outfile2 << "Step, Angular Momentum" << std::endl;
    std::ofstream outfile3("out/timing.txt");
    outfile3 << "Step, Voxelize, Find Neighbors, Compute Density, Compute Pressure, Compute Acceleration, Integrate" << std::endl;
+   std::ofstream outfile4("out/neighbors.txt");
 
 
    while(!isStopped() && stepCount <= totalSteps)
@@ -179,6 +181,7 @@ void SPH::run()
    outfile1.close();
    outfile2.close();
    outfile3.close();
+   outfile4.close();
 }
 
 
@@ -194,6 +197,11 @@ void SPH::step()
    mKineticEnergyTotal = 0.0f;
    mPotentialEnergyTotal = 0.0f;
    mAngularMomentumTotal = vec3(0.0f, 0.0f, 0.0f);
+
+   std::ofstream outfile4("out/neighbors.txt", std::ios_base::app);
+   int countNeighbors = 0;
+   int maxNeighbors = -1;
+   int minNeighbors = 34;
 
    // put particles into voxel grid
    t.start();
@@ -213,7 +221,13 @@ void SPH::step()
       float* neighborDistances= &mNeighborDistancesScaled[particleIndex*mExamineCount];
 
       findNeighbors(particleIndex, neighbors, voxel.x, voxel.y, voxel.z, neighborDistances);
+      countNeighbors += mSrcParticles->mNeighborCount[particleIndex];
+      if (mSrcParticles->mNeighborCount[particleIndex] > maxNeighbors)
+         maxNeighbors = mSrcParticles->mNeighborCount[particleIndex];
+      if (mSrcParticles->mNeighborCount[particleIndex] < minNeighbors)
+         minNeighbors = mSrcParticles->mNeighborCount[particleIndex];
    }
+   outfile4 << countNeighbors / mParticleCount << ", " << maxNeighbors << ", " << minNeighbors << std::endl;
    timeFindNeighbors = t.nsecsElapsed() / 1000000;
 
    // compute density
@@ -281,6 +295,8 @@ void SPH::step()
       timeComputeAcceleration,
       timeIntegrate
    );
+
+   outfile4.close();
 
    emit stepFinished();
 }
@@ -473,8 +489,6 @@ void SPH::findNeighbors(int particleIndex, uint16_t* neighbors, int voxelX, int 
    int y = 0;
    int z = 0;
 
-   int particleOffset = 0;
-   int particleIterateDirection = 0;
    int neighborIndex = 0;
    bool enoughNeighborsFound = false;
 
@@ -553,6 +567,7 @@ void SPH::findNeighbors(int particleIndex, uint16_t* neighbors, int voxelX, int 
 
    for (int voxelIndex = 0; voxelIndex < 8; voxelIndex++)
    {
+      
       vxi = vx[voxelIndex];
       vyi = vy[voxelIndex];
       vzi = vz[voxelIndex];
@@ -571,68 +586,114 @@ void SPH::findNeighbors(int particleIndex, uint16_t* neighbors, int voxelX, int 
          {
             // ParticleOffset va entre 0 y 4~5 en la grandísima mayoría -> LCG easy :)
             linear_cong_gen = (1664525*(particleIndex + almost_a_random) + 1013904223) % 4294967296;
-            particleOffset = linear_cong_gen % voxel.length();  //rand() % voxel.length();
+            const int particleOffset = linear_cong_gen % voxel.length();  //rand() % voxel.length();
             almost_a_random++;
-            //std::cout << particleOffset << "\n";
-            particleIterateDirection = (particleIndex % 2) ? -1 : 1;
+            const int particleIterateDirection = (particleIndex % 2) ? -1 : 1;
 
             int i = 0;
-            while (true)
+            int maxSteps = (voxel.length() + K - 1) / K;
+
+            for (int step = 0; step < maxSteps; ++step)
             {
-               int nextIndex = particleOffset + i * particleIterateDirection;
+               int nextIndexs[K];
+               
+               #pragma omp simd
+               for (int j = 0; j < K; j++) {
+                  nextIndexs[j] = (particleOffset + j) + i * particleIterateDirection;
+               }
+               
 
-               // leave if we're out out the voxel's bounds
-               if (nextIndex < 0 || nextIndex > voxel.length() - 1)
+               uint16_t realIndex[K];
+
+               bool hasOutOfBounds = false;
+               #pragma omp simd
+               for (int j = 0; j < K; j++) {
+                     int idx = nextIndexs[j];
+                     int invalid = (idx < 0 || idx >= voxel.length());
+                     int same = (!invalid && voxel[idx] == particleIndex);
+                     realIndex[j] = invalid ? -2 : (same ? -1 : voxel[idx]);
+               }
+
+               #pragma omp simd
+               for (int j = 0; j < K; j++) {
+                  int idx = nextIndexs[j];
+                  int cond = (idx < 0 || idx >= voxel.length());
+                  int val = cond ? -2 : (voxel[idx] == particleIndex ? -1 : voxel[idx]);
+                  realIndex[j] = val;
+               }
+
+               // Check if we have out of bounds
+               if (hasOutOfBounds) {
                   break;
-
-               uint16_t realIndex = voxel[nextIndex];
-               i++;
+               }
+               i += K;
 
                // Qué jijodebú el evaluate no debería ser una func aparte...
                // (es todo un check...)
                // int validNeighbor = evaluateNeighbor(particleIndex, realIndex);
+               int validMask[K];
+               float dotVals[K];
+               int realNeighbors[K];
 
-               if (particleIndex != realIndex)
-               {                  
-                  //vec3 pos_neighbor = mSrcParticles->mPosition[realIndex];
-                  pos_neighbor[0] = mSrcParticles->mPosition[realIndex * 3];
-                  pos_neighbor[1] = mSrcParticles->mPosition[realIndex * 3 + 1];
-                  pos_neighbor[2] = mSrcParticles->mPosition[realIndex * 3 + 2];
+               // Paso 1: preprocesar
+               #pragma omp simd
+               for (int j = 0; j < K; j++) {
+                  int idx = realIndex[j];
+                  int isValid = (idx != -1);
+               
+                  int base = idx * 3;
+                  float dx = pos[0] - mSrcParticles->mPosition[base];
+                  float dy = pos[1] - mSrcParticles->mPosition[base + 1];
+                  float dz = pos[2] - mSrcParticles->mPosition[base + 2];
 
-                  dot = (pos[0] - pos_neighbor[0]) * (pos[0] - pos_neighbor[0]) +\
-                        (pos[1] - pos_neighbor[1]) * (pos[1] - pos_neighbor[1]) +\
-                        (pos[2] - pos_neighbor[2]) * (pos[2] - pos_neighbor[2]);
+               
+                  // Si no es válido, poner a 0
+                  dx *= isValid;
+                  dy *= isValid;
+                  dz *= isValid;
+               
+                  dotVals[j] = dx * dx + dy * dy + dz * dz;
+                  realNeighbors[j] = idx;
+                  validMask[j] = isValid;
+               }
+               
+               int compressed[K];
+               float compressedDists[K];
 
-                  // // Mucho bardo?
-                  // pos_neighbor[0] *= -1.0f;
-                  // pos_neighbor[1] *= -1.0f;
-                  // pos_neighbor[2] *= -1.0f;
-                  // // dist = pos_i - pos_j
-                  // pos_neighbor[0] += pos[0];
-                  // pos_neighbor[1] += pos[1];
-                  // pos_neighbor[2] += pos[2];
-                  // // dot = dist^2
-                  // pos_neighbor[0] *= pos_neighbor[0];
-                  // pos_neighbor[1] *= pos_neighbor[1];
-                  // pos_neighbor[2] *= pos_neighbor[2];
-                  // dot = pos_neighbor[0] + pos_neighbor[1] + pos_neighbor[2];
+               int acceptMask[K];
+               #pragma omp simd
+               for (int j = 0; j < K; j++) {
+                  acceptMask[j] = (validMask[j] && dotVals[j] < mH2);
+               }
 
-                  if (dot < mH2)
-                  {
-                     neighborDistances[neighborIndex] = sqrt(dot) * mSimulationScale;
-                     neighbors[neighborIndex] = realIndex;
-                     neighborIndex++;
+               int compressedIndex = 0;
+               for (int j = 0; j < K; j++) {
+                  if (acceptMask[j]) {
+                     compressed[compressedIndex] = realNeighbors[j];
+                     compressedDists[compressedIndex] = sqrtf(dotVals[j]) * mSimulationScale;
+                     compressedIndex++;
                   }
                }
 
+
+               // Ahora volcar datos al arreglo real (escalares)
+               for (int j = 0; j < compressedIndex; j++) {
+                  neighbors[neighborIndex] = compressed[j];
+                  neighborDistances[neighborIndex] = compressedDists[j];
+                  neighborIndex++;
+               }
+
+
                // leave if we have sufficient neighbor particles
-               enoughNeighborsFound = (neighborIndex > mExamineCount - 1);
-               if (enoughNeighborsFound)
+               enoughNeighborsFound = (neighborIndex > mExamineCount - K);
+               if (enoughNeighborsFound){
                   break;
+               }
             }
          }
       }
 
+      
       // no need to process any other voxels
       if (enoughNeighborsFound)
          break;
