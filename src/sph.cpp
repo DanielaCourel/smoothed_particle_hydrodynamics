@@ -26,7 +26,7 @@
 
 #ifndef M
 #define M 32
-#define K 32
+#define K 8
 #endif
 
 // Unidades: [km/s pc M_sun Myr]...
@@ -610,16 +610,9 @@ void SPH::findNeighbors(int particleIndex, uint16_t* neighbors, int voxelX, int 
                for (int j = 0; j < K; j++) {
                      int idx = nextIndexs[j];
                      int invalid = (idx < 0 || idx >= voxel.length());
+                     hasOutOfBounds = hasOutOfBounds |= invalid;
                      int same = (!invalid && voxel[idx] == particleIndex);
                      realIndex[j] = invalid ? -2 : (same ? -1 : voxel[idx]);
-               }
-
-               #pragma omp simd
-               for (int j = 0; j < K; j++) {
-                  int idx = nextIndexs[j];
-                  int cond = (idx < 0 || idx >= voxel.length());
-                  int val = cond ? -2 : (voxel[idx] == particleIndex ? -1 : voxel[idx]);
-                  realIndex[j] = val;
                }
 
                // Check if we have out of bounds
