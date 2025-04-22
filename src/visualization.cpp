@@ -151,10 +151,10 @@ void Visualization::drawParticles()
 
    for (int i = 0; i < count; i++)
    {
-      Particle* particle = &particles[i];
-
-      const vec3& pos = particle->mPosition;
-      glVertex3f(pos.x, pos.y, pos.z);
+      const float& pos_x = particles->mPosition[i * 3];
+      const float& pos_y = particles->mPosition[i * 3 + 1];
+      const float& pos_z = particles->mPosition[i * 3 + 2];
+      glVertex3f(pos_x, pos_y, pos_z);
    }
 
    glEnd();
@@ -175,7 +175,7 @@ void Visualization::drawVoxels()
    float cellSize = mSph->getCellSize();
    mSph->getGridCellCounts(x, y, z);
 
-   QList<uint16_t>* grid = mSph->getGrid();
+   QList<uint32_t>* grid = mSph->getGrid();
 
    glBegin(GL_TRIANGLES);
 

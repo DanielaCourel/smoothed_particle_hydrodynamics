@@ -10,8 +10,6 @@
 #include "vec3.h"
 #include "vec3i.h"
 
-// TO DO: int to int32?
-
 class Particle;
 
 class SPH : public QThread
@@ -40,7 +38,7 @@ Q_OBJECT
 
       float getInteractionRadius2() const;
 
-      QList<uint16_t>* getGrid();
+      QList<uint32_t>* getGrid();
 
       float getCellSize() const;
 
@@ -99,24 +97,24 @@ protected:
 
       // neighbor localization
       void findNeighbors(
-         Particle *p,
          int particleIndex,
-         uint16_t* neighbors,
+         uint32_t* neighbors,
          int voxelX,
          int voxelY,
-         int voxelZ
+         int voxelZ,
+         float* distances
       );
 
       // physics
-      void computeDensity(Particle *p, uint16_t* neighbors, float* distances);
-      void computePressure(Particle *p);
-      void computeAcceleration(Particle *p, uint16_t* neighbors, float* distances);
-      void integrate(Particle *p);
+      void computeDensity(int p, uint32_t* neighbors, float* distances);
+      void computePressure(int p);
+      void computeAcceleration(int p, uint32_t* neighbors, float* distances);
+      void integrate(int p);
 
 
       // helper functions
 
-      Particle *evaluateNeighbor(Particle *current, Particle *neighbor);
+      int evaluateNeighbor(int current, int neighbor);
 
       int computeVoxelId(int voxelX, int voxelY, int voxelZ);
 
@@ -171,8 +169,8 @@ protected:
       float mHTimes2;
       float mHTimes2Inv;
 
-      QList<uint16_t>* mGrid;
-      uint16_t* mNeighbors;
+      QList<uint32_t>* mGrid;
+      uint32_t* mNeighbors;
       float* mNeighborDistancesScaled;
 
       int totalSteps;
@@ -206,7 +204,8 @@ protected:
       float mGravConstant;
       // Central mass (and pos):
       float mCentralMass;
-      vec3 mCentralPos;
+      //vec3 mCentralPos;
+      float mCentralPos[3];
       // Softening (force)
       float mSoftening;
 
