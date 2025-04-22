@@ -28,8 +28,8 @@
 
 #ifndef M
 #define M 32
-#define K 2
 #endif
+#define K 2
 
 // Unidades: [km/s pc M_sun Myr]...
 // ¿Define a cada step estos valores?
