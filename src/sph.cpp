@@ -24,9 +24,11 @@
 #include <fstream>
 #include <sys/stat.h>
 
+#include <immintrin.h>
+
 #ifndef M
 #define M 32
-#define K 8
+#define K 2
 #endif
 
 // Unidades: [km/s pc M_sun Myr]...
@@ -105,9 +107,9 @@ SPH::SPH()
       mSrcParticles->mMass[i] = mass;
    }
 
-   mGrid = new QList<uint16_t>[mGridCellCount];
+   mGrid = new QList<uint32_t>[mGridCellCount];
 
-   mNeighbors = new uint16_t[mParticleCount*mExamineCount];
+   mNeighbors = new uint32_t[mParticleCount*mExamineCount];
    mNeighborDistancesScaled = new float[mParticleCount*mExamineCount];
 
    // randomize particle start positions -> Cambiar por otra config...
@@ -216,7 +218,7 @@ void SPH::step()
       const vec3i& voxel= mVoxelCoords[particleIndex];
 
       // neighbors for this particle
-      uint16_t* neighbors= &mNeighbors[particleIndex*mExamineCount];
+      uint32_t* neighbors= &mNeighbors[particleIndex*mExamineCount];
       // Calc 2 times dist a neighbors? Let's do it here:
       float* neighborDistances= &mNeighborDistancesScaled[particleIndex*mExamineCount];
 
@@ -240,7 +242,7 @@ void SPH::step()
    for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
    {
       // neighbors for this particle
-      uint16_t* neighbors= &mNeighbors[particleIndex*mExamineCount];
+      uint32_t* neighbors= &mNeighbors[particleIndex*mExamineCount];
       float* neighborDistances= &mNeighborDistancesScaled[particleIndex*mExamineCount];
 
       computeDensity(particleIndex, neighbors, neighborDistances);
@@ -268,7 +270,7 @@ void SPH::step()
    for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
    {
       // neighbors for this particle
-      uint16_t* neighbors= &mNeighbors[particleIndex*mExamineCount];
+      uint32_t* neighbors= &mNeighbors[particleIndex*mExamineCount];
       float* neighborDistances= &mNeighborDistancesScaled[particleIndex*mExamineCount];
 
       computeAcceleration(particleIndex, neighbors, neighborDistances);
@@ -479,7 +481,7 @@ void SPH::voxelizeParticles()
 }
 
 
-void SPH::findNeighbors(int particleIndex, uint16_t* neighbors, int voxelX, int voxelY, int voxelZ, float* neighborDistances)
+void SPH::findNeighbors(int particleIndex, uint32_t* neighbors, int voxelX, int voxelY, int voxelZ, float* neighborDistances)
 {
    float xOrientation = 0.0f;
    float yOrientation = 0.0f;
@@ -580,7 +582,7 @@ void SPH::findNeighbors(int particleIndex, uint16_t* neighbors, int voxelX, int 
       )
       {
 
-         const QList<uint16_t>& voxel = mGrid[computeVoxelId(vxi, vyi, vzi)];
+         const QList<uint32_t>& voxel = mGrid[computeVoxelId(vxi, vyi, vzi)];
 
          if (!voxel.isEmpty())
          {
@@ -603,7 +605,7 @@ void SPH::findNeighbors(int particleIndex, uint16_t* neighbors, int voxelX, int 
                }
                
 
-               uint16_t realIndex[K];
+               uint32_t realIndex[K];
 
                bool hasOutOfBounds = false;
                #pragma omp simd
@@ -615,69 +617,70 @@ void SPH::findNeighbors(int particleIndex, uint16_t* neighbors, int voxelX, int 
                      realIndex[j] = invalid ? -2 : (same ? -1 : voxel[idx]);
                }
 
-               // Check if we have out of bounds
                if (hasOutOfBounds) {
                   break;
                }
                i += K;
 
-               // Qué jijodebú el evaluate no debería ser una func aparte...
-               // (es todo un check...)
-               // int validNeighbor = evaluateNeighbor(particleIndex, realIndex);
                int validMask[K];
                float dotVals[K];
                int realNeighbors[K];
 
-               // Paso 1: preprocesar
+               // Paso 1: construir dotVals, realNeighbors, validMask
                #pragma omp simd
                for (int j = 0; j < K; j++) {
                   int idx = realIndex[j];
-                  int isValid = (idx != -1);
-               
+                  int isValid = (idx >= 0);  // <-- CORREGIDO
+
                   int base = idx * 3;
                   float dx = pos[0] - mSrcParticles->mPosition[base];
                   float dy = pos[1] - mSrcParticles->mPosition[base + 1];
                   float dz = pos[2] - mSrcParticles->mPosition[base + 2];
 
-               
-                  // Si no es válido, poner a 0
                   dx *= isValid;
                   dy *= isValid;
                   dz *= isValid;
-               
+
                   dotVals[j] = dx * dx + dy * dy + dz * dz;
                   realNeighbors[j] = idx;
                   validMask[j] = isValid;
                }
-               
+
+               // Paso 2: vectorizar compresión condicional
                int compressed[K];
                float compressedDists[K];
-
-               int acceptMask[K];
-               #pragma omp simd
-               for (int j = 0; j < K; j++) {
-                  acceptMask[j] = (validMask[j] && dotVals[j] < mH2);
-               }
-
                int compressedIndex = 0;
+               int simdBlocks = K / K;
+               float mH2v = mH2;
+
+               __m128 dotValsV = _mm_loadu_ps(dotVals);
+               __m128 mH2vec = _mm_set1_ps(mH2);
+               __m128 cmp = _mm_cmplt_ps(dotValsV, mH2vec); // dotVals < mH2
+
+               int simdValid[K];
                for (int j = 0; j < K; j++) {
-                  if (acceptMask[j]) {
-                     compressed[compressedIndex] = realNeighbors[j];
-                     compressedDists[compressedIndex] = sqrtf(dotVals[j]) * mSimulationScale;
-                     compressedIndex++;
-                  }
+                   simdValid[j] = validMask[j] ? 0xFFFFFFFF : 0x00000000;
+               }
+               __m128 validMaskV = _mm_castsi128_ps(_mm_loadu_si128((__m128i*)simdValid));
+
+               // Máscara final
+               __m128 mask = _mm_and_ps(validMaskV, cmp);
+               int bitmask = _mm_movemask_ps(mask);
+
+               for (int j = 0; j < K; j++) {
+                   if (bitmask & (1 << j)) {
+                       compressed[compressedIndex] = realNeighbors[j];
+                       compressedDists[compressedIndex] = sqrtf(dotVals[j]) * mSimulationScale;
+                       compressedIndex++;
+                   }
                }
 
-
-               // Ahora volcar datos al arreglo real (escalares)
                for (int j = 0; j < compressedIndex; j++) {
-                  neighbors[neighborIndex] = compressed[j];
-                  neighborDistances[neighborIndex] = compressedDists[j];
-                  neighborIndex++;
+                   neighbors[neighborIndex] = compressed[j];
+                   neighborDistances[neighborIndex] = compressedDists[j];
+                   neighborIndex++;
                }
-
-
-               // leave if we have sufficient neighbor particles
+            
                enoughNeighborsFound = (neighborIndex > mExamineCount - K);
                if (enoughNeighborsFound){
                   break;
@@ -685,12 +688,10 @@ void SPH::findNeighbors(int particleIndex, uint16_t* neighbors, int voxelX, int 
             }
          }
       }
-
-      
-      // no need to process any other voxels
-      if (enoughNeighborsFound)
-         break;
-   }
+   
+         if (enoughNeighborsFound)
+            break;
+      }
 
    mSrcParticles->mNeighborCount[particleIndex] = neighborIndex;
 }
@@ -722,7 +723,7 @@ int SPH::evaluateNeighbor(
 
 
 
-void SPH::computeDensity(int particleIndex, uint16_t* neighbors, float* neighborDistances)
+void SPH::computeDensity(int particleIndex, uint32_t* neighbors, float* neighborDistances)
 {
    float density = 0.0f;
    float mass = 0.0f;
@@ -733,7 +734,7 @@ void SPH::computeDensity(int particleIndex, uint16_t* neighbors, float* neighbor
 
    for (int neighborIndex = 0; neighborIndex < mSrcParticles->mNeighborCount[particleIndex]; neighborIndex++)
    {
-      uint16_t realIndex = neighbors[neighborIndex];
+      uint32_t realIndex = neighbors[neighborIndex];
 
       if(realIndex >= mParticleCount)
          break;
@@ -779,7 +780,7 @@ void SPH::computePressure(int particle)
 }
 
 
-void SPH::computeAcceleration(int particleIndex, uint16_t* neighbors, float* neighborDistances)
+void SPH::computeAcceleration(int particleIndex, uint32_t* neighbors, float* neighborDistances)
 {
    Particle* neighbor = 0;
    float distanceToNeighborScaled = 0.0f;
@@ -828,7 +829,7 @@ void SPH::computeAcceleration(int particleIndex, uint16_t* neighbors, float* nei
    // Acaso llama a cada rato al "neighbor count" o se entiende que es un numero fijo?
    for (int neighborIndex = 0; neighborIndex < mSrcParticles->mNeighborCount[particleIndex]; neighborIndex++)
    {
-      uint16_t realIndex = neighbors[neighborIndex];
+      uint32_t realIndex = neighbors[neighborIndex];
 
       pj = (mSrcParticles->mDensity[realIndex] - mRho0) * mStiffness;  // One-liner...
       rhoj = mSrcParticles->mDensity[realIndex];  // Raro porque puedo re-utilizarlo...
@@ -1213,7 +1214,7 @@ float SPH::getInteractionRadius2() const
 }
 
 
-QList<uint16_t>* SPH::getGrid()
+QList<uint32_t>* SPH::getGrid()
 {
    return mGrid;
 }
