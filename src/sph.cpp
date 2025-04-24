@@ -27,7 +27,7 @@
 #include <immintrin.h>
 
 #ifndef M
-#define M 32
+#define M 16
 #endif
 #define K 8
 
