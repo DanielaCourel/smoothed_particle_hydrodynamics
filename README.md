@@ -4,7 +4,13 @@ by Matthias Varnholt a.k.a mueslee^hjb in 2015/2016
 This code and my (most likely incorrect) notes below are based on a
 webinar held by Alan Heirich
 
+Old GIF:
+
 ![animation](sph_anim.gif)
+
+New GIF:
+
+![animation](try_gif_SPH.gif)
 
 ## Why SPH?
 We have a bunch of particles we'd like to animate just like real water
