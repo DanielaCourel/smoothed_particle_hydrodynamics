@@ -10,7 +10,7 @@ Old GIF:
 
 New GIF:
 
-![animation](try_gif_SPH.gif)
+![animation](try_gif_SPH.GIF)
 
 ## Why SPH?
 We have a bunch of particles we'd like to animate just like real water
