@@ -18,7 +18,8 @@ endif()
 set(CMAKE_CXX_STANDARD 11)
 # Modificar para agregar flags de compilación acá
 #set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fopenmp -fPIC -Ofast -ffast-math -march=native -mavx2 -mfma")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC -O3 -funsafe-math-optimizations -funroll-loops -ftree-vectorize -ffast-math -march=native -mfma -mavx -funroll-all-loops -save-temps -fopenmp -fopenmp-simd")
+# -funroll-loops
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC -O3 -funsafe-math-optimizations -ftree-vectorize -ffast-math -march=native -mfma -mavx -funroll-all-loops -save-temps -fopenmp -fopenmp-simd")
 
 find_package(Qt5 COMPONENTS Core Gui OpenGL Widgets REQUIRED)
 
