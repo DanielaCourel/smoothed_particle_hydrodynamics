@@ -66,7 +66,7 @@ SPH::SPH()
    mMaxY = mCellSize * mGridCellsY;
    mMaxZ = mCellSize * mGridCellsZ;
 
-   float time_simu = 2.0f;  // [Myr]
+   float time_simu = 1.0f;  // [Myr]
    mTimeStep = 0.001f;
    totalSteps = (int)round(time_simu/mTimeStep);
 
@@ -213,7 +213,8 @@ void SPH::step()
 
    // find neighboring particles
    t.start();
-   // #pragma omp parallel for
+   // Lab3: Prendemos OMP!
+   #pragma omp parallel for
    for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
    {
       const vec3i& voxel= mVoxelCoords[particleIndex];
@@ -237,9 +238,8 @@ void SPH::step()
    //    we only compute interactions with 32 particles.
    //    -> compute the interaction and the physics (with these 32 particles)
    t.start();
-   // #pragma omp parallel for
-
-   // Maybe se puede hacer durante el anterior loop?
+   // Lab3: Prendemos OMP!
+   #pragma omp parallel for
    for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
    {
       // neighbors for this particle
@@ -265,8 +265,8 @@ void SPH::step()
 
    // compute acceleration
    t.start();
-   // #pragma omp parallel for
-
+   // Lab3: Prendemos OMP!
+   #pragma omp parallel for
    // Maybe se puede hacer durante el anterior loop?
    for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
    {
@@ -280,8 +280,8 @@ void SPH::step()
 
    // integrate
    t.start();
-   // #pragma omp parallel for
-
+   // Lab3: Prendemos OMP!
+   #pragma omp parallel for
    // Maybe se puede hacer durante el anterior loop? Ojo con el orden...
    for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
    {
@@ -566,6 +566,8 @@ void SPH::findNeighbors(int particleIndex, uint32_t* neighbors, int voxelX, int 
             particleIterateDirection = (particleIndex % 2) ? -1 : 1;
 
             int i = 0;
+            // Cambiar este while por un for hace que se rompe la interacción de vecinos !!!
+            // ¿Mini-unroll del loop?
             while (true)
             {
                int nextIndex = particleOffset + i * particleIterateDirection;
@@ -574,7 +576,7 @@ void SPH::findNeighbors(int particleIndex, uint32_t* neighbors, int voxelX, int 
                if (nextIndex < 0 || nextIndex > voxel.length() - 1)
                   break;
 
-               uint16_t realIndex = voxel[nextIndex];
+               uint32_t realIndex = voxel[nextIndex];
                i++;
 
                // Qué jijodebú el evaluate no debería ser una func aparte...
