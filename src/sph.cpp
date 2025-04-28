@@ -29,7 +29,7 @@
 #ifndef M
 #define M 32
 #endif
-#define K 2
+#define K 8
 
 // Unidades: [km/s pc M_sun Myr]...
 // ¿Define a cada step estos valores?
@@ -599,7 +599,6 @@ void SPH::findNeighbors(int particleIndex, uint32_t* neighbors, int voxelX, int 
             {
                int nextIndexs[K];
                
-               #pragma omp simd
                for (int j = 0; j < K; j++) {
                   nextIndexs[j] = (particleOffset + j) + i * particleIterateDirection;
                }
@@ -608,7 +607,6 @@ void SPH::findNeighbors(int particleIndex, uint32_t* neighbors, int voxelX, int 
                uint32_t realIndex[K];
 
                bool hasOutOfBounds = false;
-               #pragma omp simd
                for (int j = 0; j < K; j++) {
                      int idx = nextIndexs[j];
                      int invalid = (idx < 0 || idx >= voxel.length());
@@ -627,7 +625,6 @@ void SPH::findNeighbors(int particleIndex, uint32_t* neighbors, int voxelX, int 
                int realNeighbors[K];
 
                // Paso 1: construir dotVals, realNeighbors, validMask
-               #pragma omp simd
                for (int j = 0; j < K; j++) {
                   int idx = realIndex[j];
                   int isValid = (idx >= 0);  // <-- CORREGIDO
@@ -650,8 +647,6 @@ void SPH::findNeighbors(int particleIndex, uint32_t* neighbors, int voxelX, int 
                int compressed[K];
                float compressedDists[K];
                int compressedIndex = 0;
-               int simdBlocks = K / K;
-               float mH2v = mH2;
 
                __m128 dotValsV = _mm_loadu_ps(dotVals);
                __m128 mH2vec = _mm_set1_ps(mH2);
