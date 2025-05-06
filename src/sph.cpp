@@ -586,48 +586,75 @@ void SPH::findNeighbors(int particleIndex, uint32_t* neighbors, int voxelX, int 
 
          if (!voxel.isEmpty())
          {
-            // ParticleOffset va entre 0 y 4~5 en la grandísima mayoría -> LCG easy :)
             linear_cong_gen = (1664525*(particleIndex + almost_a_random) + 1013904223) % 4294967296;
             const int particleOffset = linear_cong_gen % voxel.length();  //rand() % voxel.length();
             almost_a_random++;
             const int particleIterateDirection = (particleIndex % 2) ? -1 : 1;
+            __m256i particleOffsetVec = _mm256_set1_epi32(particleOffset);
+            __m256i particleIterateDirectionVec = _mm256_set1_epi32(particleIterateDirection);
+            __m256i particleId = _mm256_set1_epi32(particleIndex);
+            __m256i ka = _mm256_set_epi32(8,8,8,8,8,8,8,8);
 
-            int i = 0;
+            __m256i iii = _mm256_setzero_si256();
             int maxSteps = (voxel.length() + K - 1) / K;
+            
 
             for (int step = 0; step < maxSteps; ++step)
             {
-               int nextIndexs[K];
+
+               __m256i jota = _mm256_set_epi32(7,6,5,4,3,2,1,0);  //valor para los 8 jota's
+               //(off + jota) + i * pID
+               __m256i nextIndexs = _mm256_add_epi32(particleOffsetVec, jota);
+               __m256i nextIndexsaux = _mm256_mullo_epi32(iii, particleIterateDirectionVec);
+               nextIndexs = _mm256_add_epi32(nextIndexs, nextIndexsaux);
                
-               for (int j = 0; j < K; j++) {
-                  nextIndexs[j] = (particleOffset + j) + i * particleIterateDirection;
-               }
                
+               __m256i zeros = _mm256_setzero_si256();
+               __m256i voxelLength = _mm256_set1_epi32(voxel.length());
+
+               __m256i tooSmall = _mm256_cmpgt_epi32(zeros, nextIndexs);           // nextIndexs < 0
+               __m256i tooBig = _mm256_cmpgt_epi32(nextIndexs, _mm256_sub_epi32(voxelLength, _mm256_set1_epi32(1)));  // nextIndexs >= voxel.length()
+
+               __m256i invalid = _mm256_or_si256(tooSmall, tooBig);  // invalid = (nextIndexs < 0 || nextIndexs >= voxel.length())
+
+
+               __m256i ones = _mm256_set1_epi32(1);
+               __m256i valid = _mm256_cmpeq_epi32(invalid, ones);
+               int cmp = _mm256_movemask_ps(_mm256_castsi256_ps(invalid));
+               __m256i same = _mm256_cmpeq_epi32(nextIndexs, particleId);
+
+               if (cmp != 0)
+                  break;
 
                uint32_t realIndex[K];
+               
 
-               bool hasOutOfBounds = false;
+               alignas(32) int invalidarray[8];
+               _mm256_store_si256((__m256i*)invalidarray, invalid);
+               alignas(32) int samearray[8];
+               _mm256_store_si256((__m256i*)samearray, same);
+               alignas(32) int nextIndexsarray[8];
+               _mm256_store_si256((__m256i*)nextIndexsarray, nextIndexs);
+
+               #pragma omp simd
                for (int j = 0; j < K; j++) {
-                     int idx = nextIndexs[j];
-                     int invalid = (idx < 0 || idx >= voxel.length());
-                     hasOutOfBounds = hasOutOfBounds |= invalid;
-                     int same = (!invalid && voxel[idx] == particleIndex);
-                     realIndex[j] = invalid ? -2 : (same ? -1 : voxel[idx]);
+                     int value = invalidarray[j] ? 1 : 0;
+                     int same = samearray[j];
+                     int idx = nextIndexsarray[j];
+                     realIndex[j] = value ? -2 : (same ? -1 : voxel[idx]);
+   
                }
 
-               if (hasOutOfBounds) {
-                  break;
-               }
-               i += K;
+               iii = _mm256_add_epi32(iii,ka);
 
                int validMask[K];
                float dotVals[K];
                int realNeighbors[K];
 
-               // Paso 1: construir dotVals, realNeighbors, validMask
+               #pragma omp simd
                for (int j = 0; j < K; j++) {
                   int idx = realIndex[j];
-                  int isValid = (idx >= 0);  // <-- CORREGIDO
+                  int isValid = (idx >= 0);
 
                   int base = idx * 3;
                   float dx = pos[0] - mSrcParticles->mPosition[base];
@@ -643,37 +670,27 @@ void SPH::findNeighbors(int particleIndex, uint32_t* neighbors, int voxelX, int 
                   validMask[j] = isValid;
                }
 
-               // Paso 2: vectorizar compresión condicional
-               int compressed[K];
-               float compressedDists[K];
-               int compressedIndex = 0;
-
-               __m128 dotValsV = _mm_loadu_ps(dotVals);
-               __m128 mH2vec = _mm_set1_ps(mH2);
-               __m128 cmp = _mm_cmplt_ps(dotValsV, mH2vec); // dotVals < mH2
+               __m256 dotValsV = _mm256_loadu_ps(dotVals);
+               __m256 mH2vec = _mm256_set1_ps(mH2);
+               __m256 cmp1 = _mm256_cmp_ps(dotValsV, mH2vec, _CMP_LT_OQ); // dotVals < mH2
 
                int simdValid[K];
+               #pragma omp simd
                for (int j = 0; j < K; j++) {
                    simdValid[j] = validMask[j] ? 0xFFFFFFFF : 0x00000000;
                }
-               __m128 validMaskV = _mm_castsi128_ps(_mm_loadu_si128((__m128i*)simdValid));
+               __m256 validMaskV = _mm256_castsi256_ps(_mm256_loadu_si256((__m256i*)simdValid));
 
-               // Máscara final
-               __m128 mask = _mm_and_ps(validMaskV, cmp);
-               int bitmask = _mm_movemask_ps(mask);
+               __m256 mask = _mm256_and_ps(validMaskV, cmp1);
+               int bitmask = _mm256_movemask_ps(mask);
 
+               #pragma omp simd
                for (int j = 0; j < K; j++) {
-                   if (bitmask & (1 << j)) {
-                       compressed[compressedIndex] = realNeighbors[j];
-                       compressedDists[compressedIndex] = sqrtf(dotVals[j]) * mSimulationScale;
-                       compressedIndex++;
-                   }
-               }
-
-               for (int j = 0; j < compressedIndex; j++) {
-                   neighbors[neighborIndex] = compressed[j];
-                   neighborDistances[neighborIndex] = compressedDists[j];
-                   neighborIndex++;
+                  if (bitmask & (1 << j)) {
+                     neighbors[neighborIndex] = realNeighbors[j];
+                     neighborDistances[neighborIndex] = sqrtf(dotVals[j]) * mSimulationScale;
+                     neighborIndex++;
+                  }
                }
             
                enoughNeighborsFound = (neighborIndex > mExamineCount - K);
