@@ -27,7 +27,7 @@
 #include <immintrin.h>
 
 #ifndef M
-#define M 16
+#define M 32
 #endif
 #define K 8
 
@@ -66,16 +66,16 @@ SPH::SPH()
    mMaxY = mCellSize * mGridCellsY;
    mMaxZ = mCellSize * mGridCellsZ;
 
-   float time_simu = 1.0f;  // [Myr]
+   float time_simu = 1.0f;  // [Myr]; OG = 1.
    mTimeStep = 0.001f;
    totalSteps = (int)round(time_simu/mTimeStep);
 
    // physics -> Fine-tune it to avoid a central clump?
    // higher stiffness seems alright
    mRho0 = 0.1f;  // Check qué debería ser para el H_1 + He_2 pristino...
-   mStiffness = 0.1f;  // idk
+   mStiffness = 00.1f;  // idk
    mGravity = vec3(0.0f, 0.0f, 0.0f);
-   mViscosityScalar = 1.01f;  // 1e+1~2 == nice disk formation (!!!)
+   mViscosityScalar = 1.00f;  // 1e+1~2 == nice disk formation (!!!)
    mDamping = 0.001f;  // Deberíamos "tirar" las que se escapen (En vez de checkear boundaries...)
    // Deberíamos definir acá la const de grav, el softening, la masa central y su pos?
    mGravConstant = 4.3009e-3f;  // En pc (km/s)^2 / M_sun
@@ -214,81 +214,116 @@ void SPH::step()
    // find neighboring particles
    t.start();
    // Lab3: Prendemos OMP!
-   #pragma omp parallel for
-   for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
+
+   // NEW: Y lo dejamos prendido!
+   #pragma omp parallel
    {
-      const vec3i& voxel= mVoxelCoords[particleIndex];
+      #pragma omp for
+      for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
+      {
+         const vec3i& voxel= mVoxelCoords[particleIndex];
 
-      // neighbors for this particle
-      uint32_t* neighbors= &mNeighbors[particleIndex*mExamineCount];
-      // Calc 2 times dist a neighbors? Let's do it here:
-      float* neighborDistances= &mNeighborDistancesScaled[particleIndex*mExamineCount];
+         // neighbors for this particle
+         uint32_t* neighbors= &mNeighbors[particleIndex*mExamineCount];
+         // Calc 2 times dist a neighbors? Let's do it here:
+         float* neighborDistances= &mNeighborDistancesScaled[particleIndex*mExamineCount];
 
-      findNeighbors(particleIndex, neighbors, voxel.x, voxel.y, voxel.z, neighborDistances);
-      countNeighbors += mSrcParticles->mNeighborCount[particleIndex];
-      if (mSrcParticles->mNeighborCount[particleIndex] > maxNeighbors)
-         maxNeighbors = mSrcParticles->mNeighborCount[particleIndex];
-      if (mSrcParticles->mNeighborCount[particleIndex] < minNeighbors)
-         minNeighbors = mSrcParticles->mNeighborCount[particleIndex];
+         findNeighbors(particleIndex, neighbors, voxel.x, voxel.y, voxel.z, neighborDistances);
+         countNeighbors += mSrcParticles->mNeighborCount[particleIndex];
+         if (mSrcParticles->mNeighborCount[particleIndex] > maxNeighbors)
+            maxNeighbors = mSrcParticles->mNeighborCount[particleIndex];
+         if (mSrcParticles->mNeighborCount[particleIndex] < minNeighbors)
+            minNeighbors = mSrcParticles->mNeighborCount[particleIndex];
+      }
+
+      // Todo dentro del omp parallel, pero esto se debe hacer 1 sola vez:
+      #pragma omp single
+      outfile4 << countNeighbors / mParticleCount << ", " << maxNeighbors << ", " << minNeighbors << std::endl;
+      #pragma omp single
+      timeFindNeighbors = t.nsecsElapsed() / 1000000;
+
+      // compute density
+      //    we only compute interactions with 32 particles.
+      //    -> compute the interaction and the physics (with these 32 particles)
+      #pragma omp single
+      t.start();
+      
+      // Test how many threads:
+      //#pragma omp single
+      //std::cout << "Within #pragma parallel outside loop " << omp_get_num_threads() << std::endl;
+      // Da OMP_NUM_THREADS (As it is supposed to be) :) (Da 1 si no def la outer scope de omp parallel...)
+
+      #pragma omp for
+      for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
+      {
+         //std::cout << "Inside #pragma" << omp_get_num_threads() << std::endl;
+         // neighbors for this particle
+         uint32_t* neighbors= &mNeighbors[particleIndex*mExamineCount];
+         float* neighborDistances= &mNeighborDistancesScaled[particleIndex*mExamineCount];
+
+         computeDensity(particleIndex, neighbors, neighborDistances);
+      }
+
+      #pragma omp single
+      timeComputeDensity = t.nsecsElapsed() / 1000000;
+
+      // compute pressure
+      #pragma omp single
+      t.start();
+      // #pragma omp parallel for
+
+      // Maybe se puede hacer durante el anterior loop?
+      /* for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
+      {
+         Particle* particle = &mSrcParticles[particleIndex];
+
+         computePressure(particle);
+      } */ // Skip because now are one-liners
+      #pragma omp single
+      timeComputePressure = t.nsecsElapsed() / 1000000;
+
+      // compute acceleration
+      #pragma omp single
+      t.start();
+
+      #pragma omp for
+      // Maybe se puede hacer durante el anterior loop?
+      for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
+      {
+         // neighbors for this particle
+         uint32_t* neighbors= &mNeighbors[particleIndex*mExamineCount];
+         float* neighborDistances= &mNeighborDistancesScaled[particleIndex*mExamineCount];
+
+         computeAcceleration(particleIndex, neighbors, neighborDistances);
+      }
+
+      #pragma omp single
+      timeComputeAcceleration = t.nsecsElapsed() / 1000000;
+
+      // integrate
+      #pragma omp single
+      t.start();
+
+      #pragma omp for
+      // Maybe se puede hacer durante el anterior loop? Ojo con el orden...
+      for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
+      {
+         integrate(particleIndex);
+         // E & L a cargo de integrate
+      }
+      #pragma omp single
+      timeIntegrate = t.nsecsElapsed() / 1000000;
+
+      // Test how many threads:
+      //#pragma omp single
+      //std::cout << "Still within #pragma parallel outside loop " << omp_get_num_threads() << std::endl;
+      // Da OMP_NUM_THREADS (As it is supposed to be) :)
+
+   // End pragma omp parallel
    }
-   outfile4 << countNeighbors / mParticleCount << ", " << maxNeighbors << ", " << minNeighbors << std::endl;
-   timeFindNeighbors = t.nsecsElapsed() / 1000000;
 
-   // compute density
-   //    we only compute interactions with 32 particles.
-   //    -> compute the interaction and the physics (with these 32 particles)
-   t.start();
-   // Lab3: Prendemos OMP!
-   #pragma omp parallel for
-   for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
-   {
-      // neighbors for this particle
-      uint32_t* neighbors= &mNeighbors[particleIndex*mExamineCount];
-      float* neighborDistances= &mNeighborDistancesScaled[particleIndex*mExamineCount];
-
-      computeDensity(particleIndex, neighbors, neighborDistances);
-   }
-   timeComputeDensity = t.nsecsElapsed() / 1000000;
-
-   // compute pressure
-   t.start();
-   // #pragma omp parallel for
-
-   // Maybe se puede hacer durante el anterior loop?
-   /* for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
-   {
-      Particle* particle = &mSrcParticles[particleIndex];
-
-      computePressure(particle);
-   } */ // Skip because now are one-liners
-   timeComputePressure = t.nsecsElapsed() / 1000000;
-
-   // compute acceleration
-   t.start();
-   // Lab3: Prendemos OMP!
-   #pragma omp parallel for
-   // Maybe se puede hacer durante el anterior loop?
-   for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
-   {
-      // neighbors for this particle
-      uint32_t* neighbors= &mNeighbors[particleIndex*mExamineCount];
-      float* neighborDistances= &mNeighborDistancesScaled[particleIndex*mExamineCount];
-
-      computeAcceleration(particleIndex, neighbors, neighborDistances);
-   }
-   timeComputeAcceleration = t.nsecsElapsed() / 1000000;
-
-   // integrate
-   t.start();
-   // Lab3: Prendemos OMP!
-   #pragma omp parallel for
-   // Maybe se puede hacer durante el anterior loop? Ojo con el orden...
-   for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
-   {
-      integrate(particleIndex);
-      // E & L a cargo de integrate
-   }
-   timeIntegrate = t.nsecsElapsed() / 1000000;
+   // Da 1 (As it is supposed to be)
+   //std::cout << "Outside #pragma parallel " << omp_get_num_threads() << std::endl;
 
    emit updateElapsed(
       timeVoxelize,
