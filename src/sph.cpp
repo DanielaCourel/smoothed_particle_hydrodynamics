@@ -151,6 +151,7 @@ void SPH::run()
 {
    int stepCount = 0;
 
+   /*
    // Create directory ./out
    const char *path = "out";
    int result = mkdir(path, 0777);
@@ -167,24 +168,29 @@ void SPH::run()
    std::ofstream outfile3("out/timing.txt");
    outfile3 << "Step, Voxelize, Find Neighbors, Compute Density, Compute Pressure, Compute Acceleration, Integrate" << std::endl;
    std::ofstream outfile4("out/neighbors.txt");
+   */
 
 
+   // Y si abro el parallel acá?
+   // -> Rompi todo...
    while(!isStopped() && stepCount <= totalSteps)
    {
       if (!isPaused())
       {
          step();
-         outfile1 << stepCount << ", " << mKineticEnergyTotal << ", " << mPotentialEnergyTotal << ", " << mKineticEnergyTotal + mPotentialEnergyTotal << std::endl;
-         outfile2 << stepCount << ", " << mAngularMomentumTotal.length() << std::endl;
-         outfile3 << stepCount << ", " << timeVoxelize << ", " << timeFindNeighbors << ", " << timeComputeDensity << ", " << timeComputePressure << ", " << timeComputeAcceleration << ", " << timeIntegrate << std::endl;
+         //outfile1 << stepCount << ", " << mKineticEnergyTotal << ", " << mPotentialEnergyTotal << ", " << mKineticEnergyTotal + mPotentialEnergyTotal << std::endl;
+         //outfile2 << stepCount << ", " << mAngularMomentumTotal.length() << std::endl;
+         //outfile3 << stepCount << ", " << timeVoxelize << ", " << timeFindNeighbors << ", " << timeComputeDensity << ", " << timeComputePressure << ", " << timeComputeAcceleration << ", " << timeIntegrate << std::endl;
          stepCount++;
       }
    }
 
+   /*
    outfile1.close();
    outfile2.close();
    outfile3.close();
    outfile4.close();
+   */
 }
 
 
@@ -201,7 +207,7 @@ void SPH::step()
    mPotentialEnergyTotal = 0.0f;
    mAngularMomentumTotal = vec3(0.0f, 0.0f, 0.0f);
 
-   std::ofstream outfile4("out/neighbors.txt", std::ios_base::app);
+   //std::ofstream outfile4("out/neighbors.txt", std::ios_base::app);
    int countNeighbors = 0;
    int maxNeighbors = -1;
    int minNeighbors = 34;
@@ -237,8 +243,8 @@ void SPH::step()
       }
 
       // Todo dentro del omp parallel, pero esto se debe hacer 1 sola vez:
-      #pragma omp single
-      outfile4 << countNeighbors / mParticleCount << ", " << maxNeighbors << ", " << minNeighbors << std::endl;
+      //#pragma omp single
+      //outfile4 << countNeighbors / mParticleCount << ", " << maxNeighbors << ", " << minNeighbors << std::endl;
       #pragma omp single
       timeFindNeighbors = t.nsecsElapsed() / 1000000;
 
@@ -334,7 +340,7 @@ void SPH::step()
       timeIntegrate
    );
 
-   outfile4.close();
+   //outfile4.close();
 
    emit stepFinished();
 }
