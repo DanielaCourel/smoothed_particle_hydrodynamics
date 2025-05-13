@@ -27,7 +27,7 @@
 #include <immintrin.h>
 
 #ifndef M
-#define M 32
+#define M 128
 #endif
 #define K 8
 
@@ -200,11 +200,6 @@ void SPH::step()
    mPotentialEnergyTotal = 0.0f;
    mAngularMomentumTotal = vec3(0.0f, 0.0f, 0.0f);
 
-   std::ofstream outfile4("out/neighbors.txt", std::ios_base::app);
-   int countNeighbors = 0;
-   int maxNeighbors = -1;
-   int minNeighbors = 34;
-
    // put particles into voxel grid
    t.start();
    voxelizeParticles();
@@ -212,7 +207,7 @@ void SPH::step()
 
    // find neighboring particles
    t.start();
-   // #pragma omp parallel for
+   #pragma omp parallel for
    for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
    {
       const vec3i& voxel= mVoxelCoords[particleIndex];
@@ -223,20 +218,14 @@ void SPH::step()
       float* neighborDistances= &mNeighborDistancesScaled[particleIndex*mExamineCount];
 
       findNeighbors(particleIndex, neighbors, voxel.x, voxel.y, voxel.z, neighborDistances);
-      countNeighbors += mSrcParticles->mNeighborCount[particleIndex];
-      if (mSrcParticles->mNeighborCount[particleIndex] > maxNeighbors)
-         maxNeighbors = mSrcParticles->mNeighborCount[particleIndex];
-      if (mSrcParticles->mNeighborCount[particleIndex] < minNeighbors)
-         minNeighbors = mSrcParticles->mNeighborCount[particleIndex];
    }
-   outfile4 << countNeighbors / mParticleCount << ", " << maxNeighbors << ", " << minNeighbors << std::endl;
    timeFindNeighbors = t.nsecsElapsed() / 1000000;
 
    // compute density
    //    we only compute interactions with 32 particles.
    //    -> compute the interaction and the physics (with these 32 particles)
    t.start();
-   // #pragma omp parallel for
+   #pragma omp parallel for
 
    // Maybe se puede hacer durante el anterior loop?
    for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
@@ -251,7 +240,7 @@ void SPH::step()
 
    // compute pressure
    t.start();
-   // #pragma omp parallel for
+   // //#pragma omp parallel for
 
    // Maybe se puede hacer durante el anterior loop?
    /* for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
@@ -264,7 +253,7 @@ void SPH::step()
 
    // compute acceleration
    t.start();
-   // #pragma omp parallel for
+   #pragma omp parallel for
 
    // Maybe se puede hacer durante el anterior loop?
    for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
@@ -279,7 +268,8 @@ void SPH::step()
 
    // integrate
    t.start();
-   // #pragma omp parallel for
+   //HAY QUE REVISAR ACÁ
+   #pragma omp parallel for
 
    // Maybe se puede hacer durante el anterior loop? Ojo con el orden...
    for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
@@ -297,8 +287,6 @@ void SPH::step()
       timeComputeAcceleration,
       timeIntegrate
    );
-
-   outfile4.close();
 
    emit stepFinished();
 }
@@ -439,7 +427,7 @@ void SPH::voxelizeParticles()
 {
    clearGrid();
 
-   // #pragma omp parallel for
+   #pragma omp parallel for
    for (int i = 0; i < mParticleCount; i++)
    {
       // compute a scalar voxel id from a position
@@ -567,6 +555,13 @@ void SPH::findNeighbors(int particleIndex, uint32_t* neighbors, int voxelX, int 
    float dot;
    //float distanceScaled;
 
+   // Variables para usar dentro del loop
+   __m256i zeros = _mm256_setzero_si256();
+   __m256i ka = _mm256_set_epi32(8,8,8,8,8,8,8,8);
+   __m256i jota = _mm256_set_epi32(7,6,5,4,3,2,1,0);  //valor para los 8 jota's
+   __m256i ones = _mm256_set1_epi32(1);
+   __m256 mH2vec = _mm256_set1_ps(mH2);
+
    for (int voxelIndex = 0; voxelIndex < 8; voxelIndex++)
    {
       
@@ -583,6 +578,7 @@ void SPH::findNeighbors(int particleIndex, uint32_t* neighbors, int voxelX, int 
       {
 
          const QList<uint32_t>& voxel = mGrid[computeVoxelId(vxi, vyi, vzi)];
+         __m256i voxelLength = _mm256_set1_epi32(voxel.length());
 
          if (!voxel.isEmpty())
          {
@@ -593,23 +589,17 @@ void SPH::findNeighbors(int particleIndex, uint32_t* neighbors, int voxelX, int 
             __m256i particleOffsetVec = _mm256_set1_epi32(particleOffset);
             __m256i particleIterateDirectionVec = _mm256_set1_epi32(particleIterateDirection);
             __m256i particleId = _mm256_set1_epi32(particleIndex);
-            __m256i ka = _mm256_set_epi32(8,8,8,8,8,8,8,8);
 
             __m256i iii = _mm256_setzero_si256();
             int maxSteps = (voxel.length() + K - 1) / K;
-            
 
             for (int step = 0; step < maxSteps; ++step)
             {
-
-               __m256i jota = _mm256_set_epi32(7,6,5,4,3,2,1,0);  //valor para los 8 jota's
                //(off + jota) + i * pID
                __m256i nextIndexs = _mm256_add_epi32(particleOffsetVec, jota);
                __m256i nextIndexsaux = _mm256_mullo_epi32(iii, particleIterateDirectionVec);
                nextIndexs = _mm256_add_epi32(nextIndexs, nextIndexsaux);
-               
-               
-               __m256i zeros = _mm256_setzero_si256();
+                              
                __m256i voxelLength = _mm256_set1_epi32(voxel.length());
 
                __m256i tooSmall = _mm256_cmpgt_epi32(zeros, nextIndexs);           // nextIndexs < 0
@@ -617,8 +607,6 @@ void SPH::findNeighbors(int particleIndex, uint32_t* neighbors, int voxelX, int 
 
                __m256i invalid = _mm256_or_si256(tooSmall, tooBig);  // invalid = (nextIndexs < 0 || nextIndexs >= voxel.length())
 
-
-               __m256i ones = _mm256_set1_epi32(1);
                __m256i valid = _mm256_cmpeq_epi32(invalid, ones);
                int cmp = _mm256_movemask_ps(_mm256_castsi256_ps(invalid));
                __m256i same = _mm256_cmpeq_epi32(nextIndexs, particleId);
@@ -636,7 +624,7 @@ void SPH::findNeighbors(int particleIndex, uint32_t* neighbors, int voxelX, int 
                alignas(32) int nextIndexsarray[8];
                _mm256_store_si256((__m256i*)nextIndexsarray, nextIndexs);
 
-               #pragma omp simd
+               #pragma omp simd  // este no se vectoriza :'v
                for (int j = 0; j < K; j++) {
                      int value = invalidarray[j] ? 1 : 0;
                      int same = samearray[j];
@@ -651,7 +639,7 @@ void SPH::findNeighbors(int particleIndex, uint32_t* neighbors, int voxelX, int 
                float dotVals[K];
                int realNeighbors[K];
 
-               #pragma omp simd
+               #pragma omp simd // este loop se vectoriza bien
                for (int j = 0; j < K; j++) {
                   int idx = realIndex[j];
                   int isValid = (idx >= 0);
@@ -671,11 +659,10 @@ void SPH::findNeighbors(int particleIndex, uint32_t* neighbors, int voxelX, int 
                }
 
                __m256 dotValsV = _mm256_loadu_ps(dotVals);
-               __m256 mH2vec = _mm256_set1_ps(mH2);
                __m256 cmp1 = _mm256_cmp_ps(dotValsV, mH2vec, _CMP_LT_OQ); // dotVals < mH2
 
                int simdValid[K];
-               #pragma omp simd
+               #pragma omp simd // este loop se vectoriza bien
                for (int j = 0; j < K; j++) {
                    simdValid[j] = validMask[j] ? 0xFFFFFFFF : 0x00000000;
                }
@@ -684,7 +671,7 @@ void SPH::findNeighbors(int particleIndex, uint32_t* neighbors, int voxelX, int 
                __m256 mask = _mm256_and_ps(validMaskV, cmp1);
                int bitmask = _mm256_movemask_ps(mask);
 
-               #pragma omp simd
+               #pragma omp simd  // este no se vectoriza :'v
                for (int j = 0; j < K; j++) {
                   if (bitmask & (1 << j)) {
                      neighbors[neighborIndex] = realNeighbors[j];
@@ -1015,19 +1002,21 @@ void SPH::integrate(int particleIndex)
          newVelocity[2] * newVelocity[2];
 
    // Muchos NaNs... Skip them:
-   if (dot > 0)
+   /* if (dot > 0)
    {
       // Calc acá T, W y L del sistema (no guardar las energías en las Particles)
+      #pragma omp atomic
       mKineticEnergyTotal += 0.5f * mass_here * dot;
 
       // Energía potencial sería G * Mcentral * m_i/r_i
+      #pragma omp atomic
       mPotentialEnergyTotal -= mGravConstant * mCentralMass * mass_here / distance_ij3;
       // + softening);  // B: Without soft (i.e. without a Plummer equivalent)
 
       // WIP
       //mAngularMomentumTotal += (mass_here * (newPosition - mCentralPos).cross(newVelocity));
 
-   }
+   } */
 
    mSrcParticles->mPosition[particleIndex * 3] = newPosition[0];
    mSrcParticles->mPosition[particleIndex * 3 + 1] = newPosition[1];
