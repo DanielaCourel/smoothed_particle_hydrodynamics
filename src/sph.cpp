@@ -201,83 +201,41 @@ void SPH::step()
    mAngularMomentumTotal = vec3(0.0f, 0.0f, 0.0f);
 
    // put particles into voxel grid
-   t.start();
    voxelizeParticles();
-   timeVoxelize = t.nsecsElapsed() / 1000000;
 
-   // find neighboring particles
-   t.start();
-   #pragma omp parallel for
-   for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
+   #pragma omp parallel 
    {
-      const vec3i& voxel= mVoxelCoords[particleIndex];
+      // find neighboring particles
+      #pragma omp for schedule(dynamic, 1)
+      for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
+      {
+         const vec3i& voxel= mVoxelCoords[particleIndex];
 
-      // neighbors for this particle
-      uint32_t* neighbors= &mNeighbors[particleIndex*mExamineCount];
-      // Calc 2 times dist a neighbors? Let's do it here:
-      float* neighborDistances= &mNeighborDistancesScaled[particleIndex*mExamineCount];
+         // neighbors for this particle
+         uint32_t* neighbors= &mNeighbors[particleIndex*mExamineCount];
+         // Calc 2 times dist a neighbors? Let's do it here:
+         float* neighborDistances= &mNeighborDistancesScaled[particleIndex*mExamineCount];
 
-      findNeighbors(particleIndex, neighbors, voxel.x, voxel.y, voxel.z, neighborDistances);
+         findNeighbors(particleIndex, neighbors, voxel.x, voxel.y, voxel.z, neighborDistances);
+
+         computeDensity(particleIndex, neighbors, neighborDistances);
+      }
+
+      // compute acceleration
+      #pragma omp for schedule(dynamic, 1)
+
+      // Maybe se puede hacer durante el anterior loop?
+      for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
+      {
+         // neighbors for this particle
+         uint32_t* neighbors= &mNeighbors[particleIndex*mExamineCount];
+         float* neighborDistances= &mNeighborDistancesScaled[particleIndex*mExamineCount];
+
+         computeAcceleration(particleIndex, neighbors, neighborDistances);
+         integrate(particleIndex);
+         // E & L a cargo de integrate
+      }
    }
-   timeFindNeighbors = t.nsecsElapsed() / 1000000;
-
-   // compute density
-   //    we only compute interactions with 32 particles.
-   //    -> compute the interaction and the physics (with these 32 particles)
-   t.start();
-   #pragma omp parallel for
-
-   // Maybe se puede hacer durante el anterior loop?
-   for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
-   {
-      // neighbors for this particle
-      uint32_t* neighbors= &mNeighbors[particleIndex*mExamineCount];
-      float* neighborDistances= &mNeighborDistancesScaled[particleIndex*mExamineCount];
-
-      computeDensity(particleIndex, neighbors, neighborDistances);
-   }
-   timeComputeDensity = t.nsecsElapsed() / 1000000;
-
-   // compute pressure
-   t.start();
-   // //#pragma omp parallel for
-
-   // Maybe se puede hacer durante el anterior loop?
-   /* for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
-   {
-      Particle* particle = &mSrcParticles[particleIndex];
-
-      computePressure(particle);
-   } */ // Skip because now are one-liners
-   timeComputePressure = t.nsecsElapsed() / 1000000;
-
-   // compute acceleration
-   t.start();
-   #pragma omp parallel for
-
-   // Maybe se puede hacer durante el anterior loop?
-   for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
-   {
-      // neighbors for this particle
-      uint32_t* neighbors= &mNeighbors[particleIndex*mExamineCount];
-      float* neighborDistances= &mNeighborDistancesScaled[particleIndex*mExamineCount];
-
-      computeAcceleration(particleIndex, neighbors, neighborDistances);
-   }
-   timeComputeAcceleration = t.nsecsElapsed() / 1000000;
-
-   // integrate
-   t.start();
-   //HAY QUE REVISAR ACÁ
-   #pragma omp parallel for
-
-   // Maybe se puede hacer durante el anterior loop? Ojo con el orden...
-   for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
-   {
-      integrate(particleIndex);
-      // E & L a cargo de integrate
-   }
-   timeIntegrate = t.nsecsElapsed() / 1000000;
 
    emit updateElapsed(
       timeVoxelize,
