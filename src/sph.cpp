@@ -27,7 +27,7 @@
 #include <immintrin.h>
 
 #ifndef M
-#define M 128
+#define M 32
 #endif
 #define K 8
 
@@ -74,7 +74,7 @@ SPH::SPH()
    mRho0 = 0.1f;  // Check qué debería ser para el H_1 + He_2 pristino...
    mStiffness = 0.001f;  // idk
    mGravity = vec3(0.0f, 0.0f, 0.0f);
-   mViscosityScalar = 0.01f;  // 1e+1~2 == nice disk formation (!!!)
+   mViscosityScalar = 1.00f;  // 1e+1~2 == nice disk formation (!!!)
    mDamping = 0.001f;  // Deberíamos "tirar" las que se escapen (En vez de checkear boundaries...)
    // Deberíamos definir acá la const de grav, el softening, la masa central y su pos?
    mGravConstant = 4.3009e-3f;  // En pc (km/s)^2 / M_sun
@@ -151,6 +151,7 @@ void SPH::run()
    int stepCount = 0;
 
    // Create directory ./out
+   /*
    const char *path = "out";
    int result = mkdir(path, 0777);
    if (result == 0)
@@ -166,6 +167,7 @@ void SPH::run()
    std::ofstream outfile3("out/timing.txt");
    outfile3 << "Step, Voxelize, Find Neighbors, Compute Density, Compute Pressure, Compute Acceleration, Integrate" << std::endl;
    std::ofstream outfile4("out/neighbors.txt");
+   */
 
 
    while(!isStopped() && stepCount <= totalSteps)
@@ -173,17 +175,21 @@ void SPH::run()
       if (!isPaused())
       {
          step();
+         /*
          outfile1 << stepCount << ", " << mKineticEnergyTotal << ", " << mPotentialEnergyTotal << ", " << mKineticEnergyTotal + mPotentialEnergyTotal << std::endl;
          outfile2 << stepCount << ", " << mAngularMomentumTotal.length() << std::endl;
          outfile3 << stepCount << ", " << timeVoxelize << ", " << timeFindNeighbors << ", " << timeComputeDensity << ", " << timeComputePressure << ", " << timeComputeAcceleration << ", " << timeIntegrate << std::endl;
+         */
          stepCount++;
       }
    }
 
+   /*
    outfile1.close();
    outfile2.close();
    outfile3.close();
    outfile4.close();
+   */
 }
 
 
@@ -206,7 +212,7 @@ void SPH::step()
    #pragma omp parallel 
    {
       // find neighboring particles
-      #pragma omp for schedule(dynamic, 1)
+      #pragma omp for schedule(guided)
       for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
       {
          const vec3i& voxel= mVoxelCoords[particleIndex];
@@ -222,9 +228,7 @@ void SPH::step()
       }
 
       // compute acceleration
-      #pragma omp for schedule(dynamic, 1)
-
-      // Maybe se puede hacer durante el anterior loop?
+      #pragma omp for schedule(guided)
       for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
       {
          // neighbors for this particle
@@ -232,8 +236,13 @@ void SPH::step()
          float* neighborDistances= &mNeighborDistancesScaled[particleIndex*mExamineCount];
 
          computeAcceleration(particleIndex, neighbors, neighborDistances);
+      }
+
+      // integrate (after computeAccel for the system)
+      #pragma omp for schedule(guided)
+      for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
+      {
          integrate(particleIndex);
-         // E & L a cargo de integrate
       }
    }
 
