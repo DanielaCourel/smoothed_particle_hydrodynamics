@@ -89,7 +89,7 @@ void Visualization::drawBox(float maxX, float maxY, float maxZ)
    // draw boundaries
    glBegin(GL_LINES);
 
-   glColor4f(1.0f, 1.0f, 1.0f, 0.2f);
+   glColor4f(1.0f, 1.0f, 1.0f, 0.1f);
 
    // back
    glVertex3f(a.x, a.y, a.z);
@@ -147,7 +147,7 @@ void Visualization::drawParticles()
    glBegin(GL_POINTS);
 
    // Color by density?
-   glColor4f(0.5f, 0.5f, 0.5f, 0.5f);
+   glColor4f(0.5f, 0.5f, 0.5f, 0.2f);
 
    for (int i = 0; i < count; i++)
    {
@@ -349,9 +349,9 @@ void Visualization::paintGL()
    );
 
    gluLookAt(
-      0.0f, 0.0f, -0.5f,
-      0.5f, 0.5f, 1.0f,
-      0.0f, 1.0f, 0.0f
+      0.0f, -0.1f, -0.75f,
+      0.5f, 1.25f, 1.0f,
+      0.0f, 0.2f, 1.0f
    );
 
    // setup modelview

@@ -27,7 +27,7 @@
 #include <immintrin.h>
 
 #ifndef M
-#define M 32
+#define M 128
 #endif
 #define K 8
 
@@ -57,9 +57,9 @@ SPH::SPH()
    mHScaled9 = pow(h * mSimulationScale, 9);  // Creo que está bien mantener estos floats así
    // ¿Pero no conviene definirlos como constantes?
    mParticleCount = M * 1024;
-   mGridCellsX = 32;  // OG 32...
-   mGridCellsY = 32;
-   mGridCellsZ = 32;
+   mGridCellsX = 24;  // OG 32...
+   mGridCellsY = 24;
+   mGridCellsZ = 24;
    mGridCellCount = mGridCellsX * mGridCellsY * mGridCellsZ;
    mCellSize = 2.0f * h;
    mMaxX = mCellSize * mGridCellsX;
@@ -67,12 +67,12 @@ SPH::SPH()
    mMaxZ = mCellSize * mGridCellsZ;
 
    float time_simu = 1.0f;  // [Myr]
-   mTimeStep = 0.001f;
+   mTimeStep = 1e-4f;
    totalSteps = (int)round(time_simu/mTimeStep);
 
    // physics
-   mRho0 = 0.1f;  // Check qué debería ser para el H_1 + He_2 pristino...
-   mStiffness = 0.001f;  // idk
+   mRho0 = 100.0f;  // Check qué debería ser para el H_1 + He_2 pristino...
+   mStiffness = 0.1f;  // idk
    mGravity = vec3(0.0f, 0.0f, 0.0f);
    mViscosityScalar = 1.00f;  // 1e+1~2 == nice disk formation (!!!)
    mDamping = 0.001f;  // Deberíamos "tirar" las que se escapen (En vez de checkear boundaries...)
@@ -85,8 +85,9 @@ SPH::SPH()
    mCentralPos[2] = mMaxZ * 0.5f;
    mSoftening = mHScaled; // * 0.5;  // Ojo, se recomienda que sea = h...
 
-   float mass = 1.0f;  // Cada star = 1 M_sun (Pero orig son "part de gas"...)
-   mCflLimit = 10000.0f;  // Esto no debería existir...
+   // Deberia depender de la cant de parts...
+   float mass = 0.25f;  // Cada star = 1 M_sun (Pero orig son "part de gas"...)
+   mCflLimit = 1e+4f;  // Esto no debería existir...
    mCflLimit2 = mCflLimit * mCflLimit;
 
    // smoothing kernels
@@ -369,7 +370,14 @@ void SPH::initParticlePolitionsSphere()
       v_x_inic = 20.0f * pow(dist + mHScaled*0.5, -0.5) * -sin(phi);  // a = 20.0
       v_z_inic = 20.0f * pow(dist + mHScaled*0.5, -0.5) * cos(phi);  // a = 20.0
       // Some random movements on "y" (z)
-      v_y_inic = ((rand() / (float)RAND_MAX) * 0.5f) - 0.25f;
+      // Change it a little:
+      if (phi > 0 && phi < 3.14) {
+         v_y_inic = ((rand() / (float)RAND_MAX) * 6.5f);
+      }
+      else {
+         v_y_inic = -((rand() / (float)RAND_MAX) * 6.5f);
+      };
+      
 
       //mSrcParticles->mVelocity[i].set(v_x_inic, v_y_inic, v_z_inic);
       mSrcParticles->mVelocity[i * 3] = v_x_inic;
@@ -859,6 +867,16 @@ void SPH::computeAcceleration(int particleIndex, uint32_t* neighbors, float* nei
    acceleration[0] = viscousTerm[0] - pressureGradient[0];
    acceleration[1] = viscousTerm[1] - pressureGradient[1];
    acceleration[2] = viscousTerm[2] - pressureGradient[2];
+
+   /*
+   // Add that if rho > rho_threshold => kinetic kick? Bad, toy model:
+   if (mSrcParticles->mDensity[particleIndex] > 1e+3f)
+   {
+      acceleration[0] = 1e+4f * pressureGradient[0];
+      acceleration[1] = 1e+4f * pressureGradient[1];
+      acceleration[2] = 1e+4f * pressureGradient[2];
+   }
+   */
 
    // New vecs (grav):
    float gravityTerm[3] = {0.0f, 0.0f, 0.0f};
