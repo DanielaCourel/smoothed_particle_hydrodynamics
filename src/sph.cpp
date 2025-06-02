@@ -966,7 +966,7 @@ void SPH::integrate(int particleIndex)
 
    float dot = rMinusRjScaled[0] * rMinusRjScaled[0] + rMinusRjScaled[1] * rMinusRjScaled[1] +\
          rMinusRjScaled[2] * rMinusRjScaled[2];
-   dot = sqrt(dot);
+   dot = sqrtf(dot);
 
    float distance_ij3;
    distance_ij3 = (dot + mSoftening) * (dot + mSoftening) * (dot + mSoftening);
