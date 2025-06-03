@@ -26,8 +26,11 @@
 
 #include <immintrin.h>
 
+// Include CUDA_UTILS...
+#include "cuda_utils.h" // Include the header for CUDA wrapper functions
+
 #ifndef M
-#define M 128
+#define M 256
 #endif
 #define K 8
 
@@ -116,6 +119,7 @@ SPH::SPH()
    // randomize particle start positions -> Cambiar por otra config...
    // initParticlePositionsRandom();
    initParticlePolitionsSphere();
+
 }
 
 SPH::~SPH()
@@ -169,6 +173,8 @@ void SPH::run()
    outfile3 << "Step, Voxelize, Find Neighbors, Compute Density, Compute Pressure, Compute Acceleration, Integrate" << std::endl;
    std::ofstream outfile4("out/neighbors.txt");
    */
+   
+   // O acá va la allocación de memoria en GPU?
 
 
    while(!isStopped() && stepCount <= totalSteps)
@@ -209,6 +215,9 @@ void SPH::step()
 
    // put particles into voxel grid
    voxelizeParticles();
+   
+   // Acá debería def los pointers & memory of GPU?
+   
 
    #pragma omp parallel 
    {
@@ -238,7 +247,8 @@ void SPH::step()
 
          computeAcceleration(particleIndex, neighbors, neighborDistances);
       }
-
+      
+      /*
       // integrate (after computeAccel for the system)
       #pragma omp for schedule(guided)
       for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
@@ -246,6 +256,25 @@ void SPH::step()
          integrate(particleIndex);
       }
    }
+	  */
+
+   } // End parallel -> gravity + integrate va a la GPU!
+   
+    // Kernel! (se encarga de todo...)
+    // Son "std::vector<float>", asi que así pedimos los punteros a la 1ra direc de memoria
+    // (También podría hacer "&vector[0]"...)
+    launchMyKernel(mSrcParticles->mPosition.data(), mSrcParticles->mVelocity.data(), mSrcParticles->mAcceleration.data(),
+				mParticleCount, mSimulationScale, mSoftening, mGravConstant,
+				mCentralMass, mTimeStep, mCentralPos[0], mCentralPos[1], mCentralPos[2]);
+				
+	/* Ya checkeamos, anda! (o por lo menos computa...)
+	std::cout << "Exiting GPU-kernel" << std::endl;
+	
+	for	(int i = 0; i < 10; i++)
+	{
+		std::cout << "X-var of particle " << i << " after = " << mSrcParticles->mPosition[i * 3] << std::endl;
+	}
+	*/
 
    emit updateElapsed(
       timeVoxelize,
@@ -878,6 +907,9 @@ void SPH::computeAcceleration(int particleIndex, uint32_t* neighbors, float* nei
    }
    */
 
+
+	/* Esto ahora se lo doy a integrate!
+	
    // New vecs (grav):
    float gravityTerm[3] = {0.0f, 0.0f, 0.0f};
    float distance_ij3;
@@ -916,6 +948,8 @@ void SPH::computeAcceleration(int particleIndex, uint32_t* neighbors, float* nei
       acceleration[1] *= cflScale;
       acceleration[2] *= cflScale;
    }
+   
+   */
 
    mSrcParticles->mAcceleration[particleIndex * 3] = acceleration[0];
    mSrcParticles->mAcceleration[particleIndex * 3 + 1] = acceleration[1];
