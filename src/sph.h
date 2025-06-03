@@ -101,14 +101,14 @@ protected:
          uint32_t* neighbors,
          int voxelX,
          int voxelY,
-         int voxelZ,
-         float* distances
+         int voxelZ
       );
 
       // physics
-      void computeDensity(int p, uint32_t* neighbors, float* distances);
+      //void computeDensity(int p, uint32_t* neighbors, float* distances);  // No more dist
+      void computeDensity(int p, uint32_t* neighbors);
       void computePressure(int p);
-      void computeAcceleration(int p, uint32_t* neighbors, float* distances);
+      void computeAcceleration(int p, uint32_t* neighbors);
       void integrate(int p);
 
 
@@ -171,7 +171,7 @@ protected:
 
       QList<uint32_t>* mGrid;
       uint32_t* mNeighbors;
-      float* mNeighborDistancesScaled;
+      //float* mNeighborDistancesScaled;
 
       int totalSteps;
       float mKineticEnergyTotal;
@@ -200,12 +200,14 @@ protected:
       float mDamping;
       float mCflLimit;
       float mCflLimit2;
+      
       // Gravity constant:
       float mGravConstant;
+      
       // Central mass (and pos):
       float mCentralMass;
-      //vec3 mCentralPos;
       float mCentralPos[3];
+      
       // Softening (force)
       float mSoftening;
 

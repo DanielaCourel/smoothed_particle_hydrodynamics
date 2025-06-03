@@ -30,7 +30,7 @@
 #include "cuda_utils.h" // Include the header for CUDA wrapper functions
 
 #ifndef M
-#define M 256
+#define M 128
 #endif
 #define K 8
 
@@ -51,7 +51,7 @@ SPH::SPH()
    mSimulationScale = 1.0f;  // OG = 4e-3
    mSimulationScaleInverse = 1.0f / mSimulationScale;
    mH = h;
-   mH2 = pow(h, 2);
+   mH2 = h * h;
    mHTimes2 = h * 2.0f;
    mHTimes2Inv = 1.0f / mHTimes2;
    mHScaled  = h * mSimulationScale;
@@ -60,9 +60,9 @@ SPH::SPH()
    mHScaled9 = pow(h * mSimulationScale, 9);  // Creo que está bien mantener estos floats así
    // ¿Pero no conviene definirlos como constantes?
    mParticleCount = M * 1024;
-   mGridCellsX = 24;  // OG 32...
+   mGridCellsX = 24;  // OG 32...; Try 24 or whatever
    mGridCellsY = 24;
-   mGridCellsZ = 24;
+   mGridCellsZ = 24	;
    mGridCellCount = mGridCellsX * mGridCellsY * mGridCellsZ;
    mCellSize = 2.0f * h;
    mMaxX = mCellSize * mGridCellsX;
@@ -114,7 +114,8 @@ SPH::SPH()
    mGrid = new QList<uint32_t>[mGridCellCount];
 
    mNeighbors = new uint32_t[mParticleCount*mExamineCount];
-   mNeighborDistancesScaled = new float[mParticleCount*mExamineCount];
+   //mNeighborDistancesScaled = new float[mParticleCount*mExamineCount];  // De más...
+   // Memory-bounded => Increase complexity (recalc dist to neighbors)
 
    // randomize particle start positions -> Cambiar por otra config...
    // initParticlePositionsRandom();
@@ -156,7 +157,9 @@ void SPH::run()
    int stepCount = 0;
 
    // Create directory ./out
+   
    /*
+   
    const char *path = "out";
    int result = mkdir(path, 0777);
    if (result == 0)
@@ -172,21 +175,21 @@ void SPH::run()
    std::ofstream outfile3("out/timing.txt");
    outfile3 << "Step, Voxelize, Find Neighbors, Compute Density, Compute Pressure, Compute Acceleration, Integrate" << std::endl;
    std::ofstream outfile4("out/neighbors.txt");
-   */
    
-   // O acá va la allocación de memoria en GPU?
-
+   */
 
    while(!isStopped() && stepCount <= totalSteps)
    {
       if (!isPaused())
       {
          step();
+         
          /*
          outfile1 << stepCount << ", " << mKineticEnergyTotal << ", " << mPotentialEnergyTotal << ", " << mKineticEnergyTotal + mPotentialEnergyTotal << std::endl;
          outfile2 << stepCount << ", " << mAngularMomentumTotal.length() << std::endl;
          outfile3 << stepCount << ", " << timeVoxelize << ", " << timeFindNeighbors << ", " << timeComputeDensity << ", " << timeComputePressure << ", " << timeComputeAcceleration << ", " << timeIntegrate << std::endl;
          */
+         
          stepCount++;
       }
    }
@@ -197,6 +200,7 @@ void SPH::run()
    outfile3.close();
    outfile4.close();
    */
+   
 }
 
 
@@ -209,16 +213,21 @@ void SPH::step()
    timeComputeAcceleration = 0;
    timeIntegrate = 0;
    QElapsedTimer t;
+   
+   // Only for debugging physical props
+   /*
    mKineticEnergyTotal = 0.0f;
    mPotentialEnergyTotal = 0.0f;
    mAngularMomentumTotal = vec3(0.0f, 0.0f, 0.0f);
+   */
 
    // put particles into voxel grid
+   t.start();
    voxelizeParticles();
+   timeVoxelize = t.nsecsElapsed() / 1000000;
    
-   // Acá debería def los pointers & memory of GPU?
-   
-
+   // time all the //-zone as a whole:
+   t.start();
    #pragma omp parallel 
    {
       // find neighboring particles
@@ -229,12 +238,14 @@ void SPH::step()
 
          // neighbors for this particle
          uint32_t* neighbors= &mNeighbors[particleIndex*mExamineCount];
-         // Calc 2 times dist a neighbors? Let's do it here:
-         float* neighborDistances= &mNeighborDistancesScaled[particleIndex*mExamineCount];
+         // Quiero calc 2 veces la dist a neighbors (higher complexity (!))
+         // float* neighborDistances= &mNeighborDistancesScaled[particleIndex*mExamineCount];
 
-         findNeighbors(particleIndex, neighbors, voxel.x, voxel.y, voxel.z, neighborDistances);
+         //findNeighbors(particleIndex, neighbors, voxel.x, voxel.y, voxel.z, neighborDistances);
+         findNeighbors(particleIndex, neighbors, voxel.x, voxel.y, voxel.z);
 
-         computeDensity(particleIndex, neighbors, neighborDistances);
+         //computeDensity(particleIndex, neighbors, neighborDistances);
+         computeDensity(particleIndex, neighbors);
       }
 
       // compute acceleration
@@ -243,9 +254,10 @@ void SPH::step()
       {
          // neighbors for this particle
          uint32_t* neighbors= &mNeighbors[particleIndex*mExamineCount];
-         float* neighborDistances= &mNeighborDistancesScaled[particleIndex*mExamineCount];
+         //float* neighborDistances= &mNeighborDistancesScaled[particleIndex*mExamineCount];
 
-         computeAcceleration(particleIndex, neighbors, neighborDistances);
+         //computeAcceleration(particleIndex, neighbors, neighborDistances);
+         computeAcceleration(particleIndex, neighbors);
       }
       
       /*
@@ -260,6 +272,11 @@ void SPH::step()
 
    } // End parallel -> gravity + integrate va a la GPU!
    
+   timeFindNeighbors = t.nsecsElapsed() / 1000000;
+   
+	// time all the GPU-zone as a whole:
+	t.start();
+	
     // Kernel! (se encarga de todo...)
     // Son "std::vector<float>", asi que así pedimos los punteros a la 1ra direc de memoria
     // (También podría hacer "&vector[0]"...)
@@ -267,15 +284,8 @@ void SPH::step()
 				mParticleCount, mSimulationScale, mSoftening, mGravConstant,
 				mCentralMass, mTimeStep, mCentralPos[0], mCentralPos[1], mCentralPos[2]);
 				
-	/* Ya checkeamos, anda! (o por lo menos computa...)
-	std::cout << "Exiting GPU-kernel" << std::endl;
+	timeIntegrate = t.nsecsElapsed() / 1000000;
 	
-	for	(int i = 0; i < 10; i++)
-	{
-		std::cout << "X-var of particle " << i << " after = " << mSrcParticles->mPosition[i * 3] << std::endl;
-	}
-	*/
-
    emit updateElapsed(
       timeVoxelize,
       timeFindNeighbors,
@@ -305,7 +315,7 @@ void SPH::stopSimulation()
 }
 
 
-// Sobra... -> Cambiar por otras cond inic
+// Sobra... -> CAMBIAR POR CUALQUIER OTRA IC.
 void SPH::initParticlePositionsRandom()
 {
    // srand(QDateTime::currentMSecsSinceEpoch() % 1000);
@@ -343,6 +353,7 @@ void SPH::initParticlePositionsRandom()
 }
 
 
+// ~disc
 void SPH::initParticlePolitionsSphere()
 {
    // Fix seed:
@@ -444,15 +455,29 @@ void SPH::voxelizeParticles()
       int voxelX = (int)floor(pos[0] * mHTimes2Inv);
       int voxelY = (int)floor(pos[1] * mHTimes2Inv);
       int voxelZ = (int)floor(pos[2] * mHTimes2Inv);
-
+      
+      /*
+      
+      B: Me quise hacer el canchero y comentar esto, pero es FUNDAMENTAL para evitar un segfault...
+      
+      Go branchless:
+      
       // it has been seen the positions can run slightly out of bounds for
       // one solver step. so the positions are temporarily fixed here.
+      
       if (voxelX < 0) voxelX= 0;
       if (voxelY < 0) voxelY= 0;
       if (voxelZ < 0) voxelZ= 0;
       if (voxelX >= mGridCellsX) voxelX= mGridCellsX-1;
       if (voxelY >= mGridCellsY) voxelY= mGridCellsY-1;
       if (voxelZ >= mGridCellsZ) voxelZ= mGridCellsZ-1;
+      
+      */
+      
+      // Go branchless:
+      voxelX = 0 * (voxelX < 0) + 0 * (voxelX >= mGridCellsX) + voxelX * ((voxelX > 0) && (voxelX < mGridCellsX));
+      voxelY = 0 * (voxelY < 0) + 0 * (voxelY >= mGridCellsY) + voxelY * ((voxelY > 0) && (voxelY < mGridCellsY));
+      voxelZ = 0 * (voxelZ < 0) + 0 * (voxelZ >= mGridCellsZ) + voxelZ * ((voxelZ > 0) && (voxelZ < mGridCellsZ));
 
       // don't write into particle but into separate memory
       mVoxelCoords[i].x= voxelX;
@@ -467,13 +492,13 @@ void SPH::voxelizeParticles()
    // put each particle into according voxel (sequential)
    for (int i = 0; i < mParticleCount; i++)
    {
-       //holaxd
+       //holaxd;    // B: Not parallel?
        mGrid[ mVoxelIds[i] ].push_back(i);
    }
 }
 
 
-void SPH::findNeighbors(int particleIndex, uint32_t* neighbors, int voxelX, int voxelY, int voxelZ, float* neighborDistances)
+void SPH::findNeighbors(int particleIndex, uint32_t* neighbors, int voxelX, int voxelY, int voxelZ)
 {
    float xOrientation = 0.0f;
    float yOrientation = 0.0f;
@@ -486,7 +511,6 @@ void SPH::findNeighbors(int particleIndex, uint32_t* neighbors, int voxelX, int 
    int neighborIndex = 0;
    bool enoughNeighborsFound = false;
 
-   //vec3 pos = mSrcParticles->mPosition[particleIndex];
    float pos[3];
    pos[0] = mSrcParticles->mPosition[particleIndex * 3];
    pos[1] = mSrcParticles->mPosition[particleIndex * 3 + 1];
@@ -554,10 +578,9 @@ void SPH::findNeighbors(int particleIndex, uint32_t* neighbors, int voxelX, int 
    // Para ahorrarse tirar randoms, entre 0 y 4~5 -> LCG?
    int linear_cong_gen;
    int almost_a_random = 0;
-   // Los def acá?
+   
    float pos_neighbor[3];
    float dot;
-   //float distanceScaled;
 
    // Variables para usar dentro del loop
    __m256i zeros = _mm256_setzero_si256();
@@ -679,7 +702,7 @@ void SPH::findNeighbors(int particleIndex, uint32_t* neighbors, int voxelX, int 
                for (int j = 0; j < K; j++) {
                   if (bitmask & (1 << j)) {
                      neighbors[neighborIndex] = realNeighbors[j];
-                     neighborDistances[neighborIndex] = sqrtf(dotVals[j]) * mSimulationScale;
+                     //neighborDistances[neighborIndex] = sqrtf(dotVals[j]) * mSimulationScale;
                      neighborIndex++;
                   }
                }
@@ -726,51 +749,58 @@ int SPH::evaluateNeighbor(
 
 
 
-void SPH::computeDensity(int particleIndex, uint32_t* neighbors, float* neighborDistances)
+// Try less branches? Recall video...
+void SPH::computeDensity(int particleIndex, uint32_t* neighbors)
 {
    float density = 0.0f;
    float mass = 0.0f;
-   //vec3 pos = mSrcParticles->mPosition[particleIndex];
    float w = 0.0f;
    float rightPart = 0.0f;
    float distanceScaled;
+   
+   float ri[3], rj[3];
+   ri[0] = mSrcParticles->mPosition[particleIndex * 3];
+   ri[1] = mSrcParticles->mPosition[particleIndex * 3 + 1];
+   ri[2] = mSrcParticles->mPosition[particleIndex * 3 + 2];
 
    for (int neighborIndex = 0; neighborIndex < mSrcParticles->mNeighborCount[particleIndex]; neighborIndex++)
    {
       uint32_t realIndex = neighbors[neighborIndex];
 
+	  // No debería ser necesario esto... (checked before)
       if(realIndex >= mParticleCount)
          break;
       
       if (realIndex != particleIndex)
       {
+		 rj[0] = mSrcParticles->mPosition[realIndex * 3];
+	     rj[1] = mSrcParticles->mPosition[realIndex * 3 + 1];
+	     rj[2] = mSrcParticles->mPosition[realIndex * 3 + 2];
          // add mass of neighbor
          mass = mSrcParticles->mMass[realIndex];
-         // Ya calc las dist en find_neighbors...
-         distanceScaled = neighborDistances[neighborIndex];
-         // apply smoothing kernel to mass
-         if (distanceScaled > mHScaled)
-         {
-            w = 0.0f;
-         }
-         else
-         {
-            // the dot product is not used here since it's not properly scaled
-            rightPart = (mHScaled2 - (distanceScaled * distanceScaled));
-            rightPart = (rightPart * rightPart * rightPart);
-
-            //           315
-            // w =  -------------  * rightPart
-            //      64 * PI * h^9
-            w = mKernel1Scaled * rightPart;
-
-            // apply weighted neighbor mass to our density
-            density += (mass * w);
-         }
+         
+         //distanceScaled = neighborDistances[neighborIndex];  // Again -> Higher complexity
+         distanceScaled = (ri[0] - rj[0]) * (ri[0] - rj[0]) +\
+     					(ri[1] - rj[1]) * (ri[1] - rj[1]) +\
+     					(ri[2] - rj[2]) * (ri[2] - rj[2]);
+     	 // Esta ^2!
+         
+         // apply smoothing kernel to mass; // Branchless?
+         rightPart = mHScaled2 - distanceScaled;
+         rightPart = rightPart * rightPart * rightPart;
+         w = mKernel1Scaled * rightPart * (distanceScaled < mHScaled2);  // true => 1, false => 0 (!)
+         // apply weighted neighbor mass to our density
+         density += (mass * w);  // 0. if (d^2 > h^2)
+         
+         //           315
+         // w =  -------------  * rightPart
+         //      64 * PI * h^9
+         
       }
    }
 
    mSrcParticles->mDensity[particleIndex] = density;
+   
 }
 
 // Skip this... Calc the pressure on-the-fly, maybe change later (diff EoS)
@@ -783,7 +813,7 @@ void SPH::computePressure(int particle)
 }
 
 
-void SPH::computeAcceleration(int particleIndex, uint32_t* neighbors, float* neighborDistances)
+void SPH::computeAcceleration(int particleIndex, uint32_t* neighbors)
 {
    Particle* neighbor = 0;
    float distanceToNeighborScaled = 0.0f;
@@ -794,12 +824,12 @@ void SPH::computeAcceleration(int particleIndex, uint32_t* neighbors, float* nei
    float rhoiInv = ((pi > 0.0f) ? (1.0f / pi) : 1.0f);  // Better?
    float rhoiInv2 = rhoiInv * rhoiInv;
    float piDivRhoi2 = pi * rhoiInv2;
-   //vec3 r = mSrcParticles->mPosition[particleIndex];
+   
    float r[3];
    r[0] = mSrcParticles->mPosition[particleIndex * 3];
    r[1] = mSrcParticles->mPosition[particleIndex * 3 + 1];
    r[2] = mSrcParticles->mPosition[particleIndex * 3 + 2];
-   //vec3 vi = mSrcParticles->mVelocity[particleIndex];
+   
    float vi[3];
    vi[0] = mSrcParticles->mVelocity[particleIndex * 3];
    vi[1] = mSrcParticles->mVelocity[particleIndex * 3 + 1];
@@ -810,12 +840,10 @@ void SPH::computeAcceleration(int particleIndex, uint32_t* neighbors, float* nei
    float rhojInv = 0.0f;
    float rhojInv2 = 0.0f;
    float mj = 0.0f;
-   //vec3 rj;
+
    float rj[3];
-   //vec3 vj;
    float vj[3];
-   //vec3 rMinusRj;
-   //vec3 rMinusRjScaled;
+
    float rMinusRjScaled[3];
 
    // pressure gradient...
@@ -829,22 +857,22 @@ void SPH::computeAcceleration(int particleIndex, uint32_t* neighbors, float* nei
    float acceleration[3] = {0.0f, 0.0f, 0.0f};
 
    float centerPart;
-   // Acaso llama a cada rato al "neighbor count" o se entiende que es un numero fijo?
-   for (int neighborIndex = 0; neighborIndex < mSrcParticles->mNeighborCount[particleIndex]; neighborIndex++)
+   int upper_bound_loop = mSrcParticles->mNeighborCount[particleIndex];
+   for (int neighborIndex = 0; neighborIndex < upper_bound_loop; neighborIndex++)
    {
       uint32_t realIndex = neighbors[neighborIndex];
 
-      pj = (mSrcParticles->mDensity[realIndex] - mRho0) * mStiffness;  // One-liner...
-      rhoj = mSrcParticles->mDensity[realIndex];  // Raro porque puedo re-utilizarlo...
+	  rhoj = mSrcParticles->mDensity[realIndex];
+      pj = (rhoj - mRho0) * mStiffness;  // One-liner...
       
       rhojInv = 1.0f / rhoj;  // One-liner
       rhojInv = ((rhoj > 0.0f) ? (1.0f / rhoj) : 1.0f);
       rhojInv2 = rhojInv * rhojInv;
-      //rj = mSrcParticles->mPosition[realIndex];
+      
       rj[0] = mSrcParticles->mPosition[realIndex * 3];
       rj[1] = mSrcParticles->mPosition[realIndex * 3 + 1];
       rj[2] = mSrcParticles->mPosition[realIndex * 3 + 2];
-      //vj = mSrcParticles->mVelocity[realIndex];
+      
       vj[0] = mSrcParticles->mVelocity[realIndex * 3];
       vj[1] = mSrcParticles->mVelocity[realIndex * 3 + 1];
       vj[2] = mSrcParticles->mVelocity[realIndex * 3 + 2];
@@ -855,10 +883,15 @@ void SPH::computeAcceleration(int particleIndex, uint32_t* neighbors, float* nei
       rMinusRjScaled[0] = (r[0] - rj[0]) * mSimulationScale;
       rMinusRjScaled[1] = (r[1] - rj[1]) * mSimulationScale;
       rMinusRjScaled[2] = (r[2] - rj[2]) * mSimulationScale;
-      distanceToNeighborScaled = neighborDistances[neighborIndex];
+      
+      distanceToNeighborScaled = (rMinusRjScaled[0] * rMinusRjScaled[0]) +\
+						      (rMinusRjScaled[1] * rMinusRjScaled[1]) +\
+						      (rMinusRjScaled[2] * rMinusRjScaled[2]);
+						      
+	  distanceToNeighborScaled = sqrtf(distanceToNeighborScaled);
 
       // Ya sabemos que la distancie > 0 (cuando definimos vecinos validos). However,
-      // let's add a ~softening
+      // let's add a ~softening; Use rsqrtf()?
       pressureGradientContribution[0] = mKernel2Scaled * rMinusRjScaled[0] / (distanceToNeighborScaled + 0.01);
       pressureGradientContribution[1] = mKernel2Scaled * rMinusRjScaled[1] / (distanceToNeighborScaled + 0.01);
       pressureGradientContribution[2] = mKernel2Scaled * rMinusRjScaled[2] / (distanceToNeighborScaled + 0.01);
@@ -890,25 +923,18 @@ void SPH::computeAcceleration(int particleIndex, uint32_t* neighbors, float* nei
       viscousTerm[2] *= mViscosityScalar * rhoiInv;
 
    }
-   //viscousTerm *= (mViscosityScalar * rhoiInv);
 
-   //acceleration = viscousTerm - pressureGradient;
    acceleration[0] = viscousTerm[0] - pressureGradient[0];
    acceleration[1] = viscousTerm[1] - pressureGradient[1];
    acceleration[2] = viscousTerm[2] - pressureGradient[2];
 
-   /*
-   // Add that if rho > rho_threshold => kinetic kick? Bad, toy model:
-   if (mSrcParticles->mDensity[particleIndex] > 1e+3f)
-   {
-      acceleration[0] = 1e+4f * pressureGradient[0];
-      acceleration[1] = 1e+4f * pressureGradient[1];
-      acceleration[2] = 1e+4f * pressureGradient[2];
-   }
-   */
+
+   // WIP: IF rho_i > rho_threshold => kick cinetico!
 
 
-	/* Esto ahora se lo doy a integrate!
+   /* 
+   
+   Esto ahora se lo doy a integrate!
 	
    // New vecs (grav):
    float gravityTerm[3] = {0.0f, 0.0f, 0.0f};
@@ -951,12 +977,14 @@ void SPH::computeAcceleration(int particleIndex, uint32_t* neighbors, float* nei
    
    */
 
+   // Updateo ESTO (la parte hidro), para que desp GPU se encargue de grav + solver...
    mSrcParticles->mAcceleration[particleIndex * 3] = acceleration[0];
    mSrcParticles->mAcceleration[particleIndex * 3 + 1] = acceleration[1];
    mSrcParticles->mAcceleration[particleIndex * 3 + 2] = acceleration[2];
 }
 
 
+// Deprecated (por el kernel CUDA)
 void SPH::integrate(int particleIndex)
 {   
    // vec3 position = mSrcParticles->mPosition[particleIndex];
@@ -1047,6 +1075,7 @@ void SPH::integrate(int particleIndex)
 }
 
 
+// Maybe en algun momento lo podriamos usar (otras IC)
 void SPH::handleBoundaryConditions(
    vec3 position,
    vec3* newVelocity,
@@ -1054,6 +1083,9 @@ void SPH::handleBoundaryConditions(
    vec3* newPosition
 )
 {
+
+/*
+
    // x coord
    if (newPosition->x < 0.0f)
    {
@@ -1143,9 +1175,13 @@ void SPH::handleBoundaryConditions(
          newVelocity
       );
    }
+   
+*/
+
 }
 
 
+// Idem prev...
 void SPH::applyBoundary(
       vec3 position,
       float timeStep,
@@ -1155,7 +1191,9 @@ void SPH::applyBoundary(
    vec3* newVelocity
 )
 {
-   
+
+/*
+
    vec3 intersection = position + (*newVelocity * intersectionDistance);
 
    float dotProduct =
@@ -1170,6 +1208,9 @@ void SPH::applyBoundary(
    // apply boundaries
    *newVelocity = reflection;
    *newPosition = intersection + reflection * (remaining * mDamping);
+   
+*/
+
 }
 
 
