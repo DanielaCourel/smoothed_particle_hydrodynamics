@@ -4,6 +4,10 @@
 #include <cuda_runtime.h> // Required for CUDA runtime API functions (e.g., cudaMalloc, cudaMemcpy, cudaFree)
 #include <cmath>
 
+// I want to synchronize WITHIN the kernel (to avoid launching two...)
+#include <cooperative_groups.h>
+namespace cg = cooperative_groups;
+
 #include "device_launch_parameters.h"  // ??? -> ask for it.
 
 // Def a checker:
@@ -60,6 +64,9 @@ NEW: Como el findNeighbors() es muy hincha bolas, y quiero mergear todas las fun
 __global__ void step_CUDA(float* position, float* velocity, float* acceleration,
 						float* mass, float* density)
 {
+	// Get the grid group (to synchronize before integration)
+    cg::grid_group grid = cg::this_grid();
+
 	// Thread ID
 	int tid = blockIdx.x * blockDim.x + threadIdx.x;
 	// Init the vars needed...
@@ -143,7 +150,7 @@ __global__ void step_CUDA(float* position, float* velocity, float* acceleration,
 	acceleration[3*tid + 1] = viscousTerm[1] - pressureGradient[1];
 	acceleration[3*tid + 2] = viscousTerm[2] - pressureGradient[2];
 
-	// Veamos la distancia al BH central (no dependo de las demas):
+	// Veamos la distancia al BH central (no dependo de las demás):
 	rMinusRjScaled[0] = (position[3*tid + 0] - x_centre) * scale;
 	rMinusRjScaled[1] = (position[3*tid + 1] - y_centre) * scale;
 	rMinusRjScaled[2] = (position[3*tid + 2] - z_centre) * scale;
@@ -172,6 +179,10 @@ __global__ void step_CUDA(float* position, float* velocity, float* acceleration,
 	
 	// ---------------------------------------------
 	// Listo! Ahora, integro con LF-KDK
+
+	// Synchronize all threads in the grid before moving to the next phase
+    grid.sync(); // All threads in the grid must reach this point
+	
 	// ---------------------------------------------
 	
 	// Only gravity (reset accel para el mid-step!)
