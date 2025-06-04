@@ -41,6 +41,7 @@ __constant__ float mKernel3Scaled;
 // Also these:
 __constant__ float mRho0;
 __constant__ float mViscosityScalar;
+__constant__ float mStiffness;
 
 // Estas variables las voy a tener que llamar del host (en cada step pls), así que son args del wrapper!!! (=/= kernel (!))
 
@@ -63,7 +64,9 @@ __global__ void step_CUDA(float* position, float* velocity, float* acceleration,
 	int tid = blockIdx.x * blockDim.x + threadIdx.x;
 	// Init the vars needed...
 	int count_neighb = 0;
-	float distance, distance_ij3, rightPart, w, centerPart, dot;
+	float distance, distance_ij3, invDist;
+	float rightPart, w, centerPart, dot;
+	float rMinusRjScaled[3];
 
 	// Cosas hydro:
 	// Pressure
@@ -74,10 +77,7 @@ __global__ void step_CUDA(float* position, float* velocity, float* acceleration,
 	float pressureGradientContribution[3];
 	float pressureGradient[3] = {0.0f, 0.0f, 0.0f};
 	// Pressure - part_j
-	float pj;
-	float rhojInv;
-	float rhojInv2;
-	float piDivRhoj2;
+	float pj, mj, rhojInv, rhojInv2, piDivRhoj2;
 	// Viscosity:
 	float viscousTerm[3] = {0.0f, 0.0f, 0.0f};
 
@@ -100,17 +100,17 @@ __global__ void step_CUDA(float* position, float* velocity, float* acceleration,
 		// Density:
 		rightPart = h_krnl2 - distance_ij3;
 		rightPart = rightPart * rightPart * rightPart;
-		w = mKernel1Scaled * rightPart * (distance_ij3 < mHScaled2);  // true => 1, false => 0 (!)
+		w = mKernel1Scaled * rightPart * (distance_ij3 < h_krnl2);  // true => 1, false => 0 (!)
 		// apply weighted neighbor mass to our density
 		density[tid] += (mass[tid] * w);  // 0. if (d^2 >= h^2)
 
 		// Pressure gradient:
-		mj = mass[j]
+		mj = mass[j];
 		pj = (density[j] - mRho0) * mStiffness;
-		rhojInv = ((rhoj > 0.0f) ? (1.0f / rhoj) : 1.0f);
+		rhojInv = ((density[j] > 0.0f) ? (1.0f / density[j]) : 1.0f);
 		rhojInv2 = rhojInv * rhojInv;
 
-		centerPart = (h_krnl - distance) * (distance_ij3 < mHScaled2);  // true => 1, false => 0 (!)
+		centerPart = (h_krnl - distance) * (distance_ij3 < h_krnl2);  // true => 1, false => 0 (!)
 		centerPart *= centerPart;  // 0 if d >= h
 		centerPart *= mj * piDivRhoi2 * (pj * rhojInv2);  // 0 if d >= h
 
@@ -124,7 +124,7 @@ __global__ void step_CUDA(float* position, float* velocity, float* acceleration,
 		pressureGradient[2] += pressureGradientContribution[2] * centerPart;
 
 		// Viscosity (Reuso variables):
-		centerPart = (h_krnl - distance) * (distance_ij3 < mHScaled2);  // true => 1, false => 0 (!)
+		centerPart = (h_krnl - distance) * (distance_ij3 < h_krnl2);  // true => 1, false => 0 (!)
 		centerPart *= rhojInv * mj * mKernel3Scaled;  // 0 if d >= h
 
 		// add contribution to viscous term (+0 if d >= h)
@@ -132,7 +132,7 @@ __global__ void step_CUDA(float* position, float* velocity, float* acceleration,
 		viscousTerm[1] += (velocity[3*tid + 1] - velocity[3*j + 1]) * centerPart * mViscosityScalar * rhoiInv;
 		viscousTerm[2] += (velocity[3*tid + 2] - velocity[3*j + 2]) * centerPart * mViscosityScalar * rhoiInv;
 
-		count_neighb += 1 * (distance_ij3 < mHScaled2);  // 0 if d >= h
+		count_neighb += 1 * (distance_ij3 < h_krnl2);  // 0 if d >= h
 
 		if (count_neighb >= 32) break;
 	}
@@ -235,7 +235,8 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
 				float h_mass_centre, float h_delta_step,
 				float h_x_centre, float h_y_centre, float h_z_centre,
 				float h_h_krnl, float h_h_krnl2, float h_mHScaled9, float h_mKernel1Scaled,
-				float h_mKernel2Scaled, float h_mKernel3Scaled, float h_mRho0, float h_mViscosityScalar)
+				float h_mKernel2Scaled, float h_mKernel3Scaled, float h_mRho0,
+				float h_mViscosityScalar, float h_mStiffness)
 {
 	const int N = h_cant_particles;
 	// Pointer(s) to the array on the device (GPU)
@@ -288,6 +289,7 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
 	cudaMemcpyToSymbol(mKernel3Scaled, &h_mKernel3Scaled, sizeof(float), 0, cudaMemcpyHostToDevice);
 	cudaMemcpyToSymbol(mRho0, &h_mRho0, sizeof(float), 0, cudaMemcpyHostToDevice);
 	cudaMemcpyToSymbol(mViscosityScalar, &h_mViscosityScalar, sizeof(float), 0, cudaMemcpyHostToDevice);
+	cudaMemcpyToSymbol(mStiffness, &h_mStiffness, sizeof(float), 0, cudaMemcpyHostToDevice);
 
 	// Define grid and block dimensions for kernel execution
 	// A block is a group of threads that can cooperate.
@@ -298,7 +300,7 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
 	int blocksPerGrid = (N + threadsPerBlock - 1) / threadsPerBlock; // Ceiling division
 	
 	// Launch the kernel -> Ojo ctes...
-	integrate_CUDA<<<blocksPerGrid, threadsPerBlock>>>(device_pos, device_vel, device_acc);
+	step_CUDA<<<blocksPerGrid, threadsPerBlock>>>(device_pos, device_vel, device_acc);
     
     // Synchronize the device to ensure all kernel operations are complete
     // cudaDeviceSynchronize blocks the CPU until all GPU tasks are finished.

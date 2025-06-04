@@ -273,7 +273,7 @@ void SPH::step()
          mParticleCount, mSimulationScale, mSoftening, mGravConstant,
          mCentralMass, mTimeStep, mCentralPos[0], mCentralPos[1], mCentralPos[2],
          mH, mH2, mHScaled9, mKernel1Scaled, mKernel2Scaled, mKernel3Scaled,
-         mRho0, mViscosityScalar);
+         mRho0, mViscosityScalar, mStiffness);
 				
 	timeIntegrate = t.nsecsElapsed() / 1000000;
 	
