@@ -4,10 +4,6 @@
 #include <cuda_runtime.h> // Required for CUDA runtime API functions (e.g., cudaMalloc, cudaMemcpy, cudaFree)
 #include <cmath>
 
-// I want to synchronize WITHIN the kernel (to avoid launching two...)
-#include <cooperative_groups.h>
-namespace cg = cooperative_groups;
-
 #include "device_launch_parameters.h"  // ??? -> ask for it.
 
 // Def a checker:
@@ -61,14 +57,12 @@ NEW: Como el findNeighbors() es muy hincha bolas, y quiero mergear todas las fun
 // Then, the function that is passed to the GPU a.k.a. "kernel" (will be executed on the 
 // GPU by multiple threads in parallel; Each thread will process a single element of the array).
 // Toca SOLO los arrays de pos y acc (!)
-__global__ void step_CUDA(float* position, float* velocity, float* acceleration,
+__global__ void accel_CUDA(float* position, float* velocity, float* acceleration,
 						float* mass, float* density)
 {
-	// Get the grid group (to synchronize before integration)
-    cg::grid_group grid = cg::this_grid();
-
 	// Thread ID
 	int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
 	// Init the vars needed...
 	int count_neighb = 0;
 	float distance, distance_ij3, invDist;
@@ -178,13 +172,21 @@ __global__ void step_CUDA(float* position, float* velocity, float* acceleration,
 	// acc = acc if (|acc|^2 < CFL^2 => "x1"); acc = acc/|acc| * CFL if (|acc|^2 >= CFL^2)
 	
 	// ---------------------------------------------
-	// Listo! Ahora, integro con LF-KDK
-
-	// Synchronize all threads in the grid before moving to the next phase
-    grid.sync(); // All threads in the grid must reach this point
-	
+	// Listo! Ahora, integro con LF-KDK -> Next kernel...	
 	// ---------------------------------------------
-	
+}
+
+__global__ void integrate_CUDA(float* position, float* velocity, float* acceleration)
+{
+	// Thread ID
+	int tid = blockIdx.x * blockDim.x + threadIdx.x;
+	// Init the vars needed...
+	float distance_ij3, invDist;
+	float rMinusRjScaled[3];
+
+	// 1st, compute distance. If d < h => count_neighbor++; if count_neighbor >= 32, cut the loop (!)
+	if (tid >= cant_particles) return;
+		
 	// Only gravity (reset accel para el mid-step!)
 	velocity[3*tid + 0] += acceleration[3*tid + 0] * delta_step * 0.5f;
 	velocity[3*tid + 1] += acceleration[3*tid + 1] * delta_step * 0.5f;
@@ -217,27 +219,8 @@ __global__ void step_CUDA(float* position, float* velocity, float* acceleration,
 	velocity[3*tid + 2] += acceleration[3*tid + 2] * delta_step;
 
 	// Y ya modifiqué todos los vectores!
-
-	/*
-	
-	WIP: VISUALIZADOR !!! (en vez de pasarle a cada step a la CPU...)
-	
-	*/
 }
 
-// Ese es el kernel principal, ahora falta el wrapper (que pide las ctes al host!):
-
-// NEW: remember new ctes ->
-/*
-__constant__ float h_krnl2;
-__constant__ float h_krnl;
-__constant__ float mHScaled9;
-__constant__ float mKernel1Scaled;
-__constant__ float mKernel2Scaled;
-__constant__ float mKernel3Scaled;
-__constant__ float mRho0;
-__constant__ float mViscosityScalar;
-*/
 
 // Host-side wrapper function
 void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
@@ -301,6 +284,7 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
 	cudaMemcpyToSymbol(mRho0, &h_mRho0, sizeof(float), 0, cudaMemcpyHostToDevice);
 	cudaMemcpyToSymbol(mViscosityScalar, &h_mViscosityScalar, sizeof(float), 0, cudaMemcpyHostToDevice);
 	cudaMemcpyToSymbol(mStiffness, &h_mStiffness, sizeof(float), 0, cudaMemcpyHostToDevice);
+	
 
 	// Define grid and block dimensions for kernel execution
 	// A block is a group of threads that can cooperate.
@@ -310,16 +294,21 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
 	int threadsPerBlock = 256;
 	int blocksPerGrid = (N + threadsPerBlock - 1) / threadsPerBlock; // Ceiling division
 	
-	// Launch the kernel -> Ojo ctes...
-	step_CUDA<<<blocksPerGrid, threadsPerBlock>>>(device_pos, device_vel, device_acc,
+	// Launch the kernel(s)
+	accel_CUDA<<<blocksPerGrid, threadsPerBlock>>>(device_pos, device_vel, device_acc,
 												device_mass, device_dens);
+
+	// Synchronize the device to ensure all kernel operations are complete
+    // cudaDeviceSynchronize blocks the CPU until all GPU tasks are finished.
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+	integrate_CUDA<<<blocksPerGrid, threadsPerBlock>>>(device_pos, device_vel, device_acc,
+												device_mass, device_dens);												
     
     // Synchronize the device to ensure all kernel operations are complete
     // cudaDeviceSynchronize blocks the CPU until all GPU tasks are finished.
     CUDA_CHECK(cudaDeviceSynchronize());
 
-	// HERE could be another kernel to execute, maybe using the same data!
-	// (define another __global__ before)
 
     // Copy data back from device to host
     // Arguments: destination, source, size, direction (device to host)
