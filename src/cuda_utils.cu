@@ -77,7 +77,7 @@ __global__ void step_CUDA(float* position, float* velocity, float* acceleration,
 	float pressureGradientContribution[3];
 	float pressureGradient[3] = {0.0f, 0.0f, 0.0f};
 	// Pressure - part_j
-	float pj, mj, rhojInv, rhojInv2, piDivRhoj2;
+	float pj, mj, rhojInv, rhojInv2;
 	// Viscosity:
 	float viscousTerm[3] = {0.0f, 0.0f, 0.0f};
 
@@ -300,7 +300,8 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
 	int blocksPerGrid = (N + threadsPerBlock - 1) / threadsPerBlock; // Ceiling division
 	
 	// Launch the kernel -> Ojo ctes...
-	step_CUDA<<<blocksPerGrid, threadsPerBlock>>>(device_pos, device_vel, device_acc);
+	step_CUDA<<<blocksPerGrid, threadsPerBlock>>>(device_pos, device_vel, device_acc,
+												device_mass, device_dens);
     
     // Synchronize the device to ensure all kernel operations are complete
     // cudaDeviceSynchronize blocks the CPU until all GPU tasks are finished.
