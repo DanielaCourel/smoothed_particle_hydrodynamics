@@ -4,6 +4,10 @@
 #include <cuda_runtime.h> // Required for CUDA runtime API functions (e.g., cudaMalloc, cudaMemcpy, cudaFree)
 #include <cmath>
 
+#include <stdio.h> // For fprintf
+#include <cuda_gl_interop.h> // For CUDA-OpenGL interoperability functions
+// No checkeo for OpenGL errors...
+
 // I want to synchronize WITHIN the kernel (to avoid launching two...)
 #include <cooperative_groups.h>
 namespace cg = cooperative_groups;
@@ -61,6 +65,11 @@ NEW: Como el findNeighbors() es muy hincha bolas, y quiero mergear todas las fun
 // Then, the function that is passed to the GPU a.k.a. "kernel" (will be executed on the 
 // GPU by multiple threads in parallel; Each thread will process a single element of the array).
 // Toca SOLO los arrays de pos y acc (!)
+
+// NEW:
+// --- CUDA Kernel: Particle Integration and VBO Update ---
+// This kernel will directly write particle positions into the mapped OpenGL VBO.
+
 __global__ void step_CUDA(float* position, float* velocity, float* acceleration,
 						float* mass, float* density)
 {
@@ -182,7 +191,7 @@ __global__ void step_CUDA(float* position, float* velocity, float* acceleration,
 
 	// Synchronize all threads in the grid before moving to the next phase
     grid.sync(); // All threads in the grid must reach this point
-	
+
 	// ---------------------------------------------
 	
 	// Only gravity (reset accel para el mid-step!)
@@ -227,6 +236,39 @@ __global__ void step_CUDA(float* position, float* velocity, float* acceleration,
 
 // Ese es el kernel principal, ahora falta el wrapper (que pide las ctes al host!):
 
+// --- Host-Side CUDA-OpenGL Interoperability Functions ---
+// OJO CTES!
+GLuint initCudaGLInterop(int numParticles, struct cudaGraphicsResource** cuda_vbo_resource_out) {
+    GLuint vboID = 0;
+    size_t buffer_size = numParticles * 3 * sizeof(float); // 3 floats per particle (x, y, z)
+
+    // 1. Create OpenGL VBO
+    GL_CHECK(glGenBuffers(1, &vboID));
+    GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, vboID));
+    // Allocate buffer on GPU for particle positions. GL_DYNAMIC_DRAW indicates frequent updates.
+    GL_CHECK(glBufferData(GL_ARRAY_BUFFER, buffer_size, NULL, GL_DYNAMIC_DRAW));
+    GL_CHECK(glBindBuffer(GL_ARRAY_BUFFER, 0)); // Unbind the buffer
+
+    // 2. Register VBO with CUDA
+    // cudaGraphicsMapFlagsWriteDiscard: CUDA will write to the entire buffer,
+    // so OpenGL doesn't need to preserve old data. This is efficient for full updates.
+    CUDA_CHECK(cudaGraphicsGLRegisterBuffer(cuda_vbo_resource_out, vboID, cudaGraphicsMapFlagsWriteDiscard));
+
+
+	// OJO con esto, las inicializo antes!
+
+    // Optional: Initialize particle positions on the GPU (e.g., in a grid)
+    // You could write a separate kernel for this, or do it here by mapping/unmapping.
+    float* d_initial_positions;
+    CUDA_CHECK(cudaGraphicsMapResources(1, cuda_vbo_resource_out, 0));
+    CUDA_CHECK(cudaGraphicsResourceGetMappedPointer((void**)&d_initial_positions, NULL, *cuda_vbo_resource_out));
+
+    CUDA_CHECK(cudaGraphicsUnmapResources(1, cuda_vbo_resource_out, 0));
+
+    return vboID;
+}
+
+
 // NEW: remember new ctes ->
 /*
 __constant__ float h_krnl2;
@@ -240,7 +282,7 @@ __constant__ float mViscosityScalar;
 */
 
 // Host-side wrapper function
-void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
+void launchMyKernel(struct cudaGraphicsResource* cuda_vbo_resource, float* h_position, float* h_velocity, float* h_acceleration,
 				float* h_mass, float* h_density,
 				int h_cant_particles, float h_scale, float h_softening, float h_grav_cte,
 				float h_mass_centre, float h_delta_step,
@@ -256,6 +298,13 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
 	float* device_acc;
 	float* device_mass;
 	float* device_dens;
+
+	size_t num_bytes; // Not strictly needed here, but good to get
+
+    // 1. Map the OpenGL VBO to CUDA memory space
+    CUDA_CHECK(cudaGraphicsMapResources(1, &cuda_vbo_resource, 0));
+    // Get the device pointer to the mapped VBO data
+    CUDA_CHECK(cudaGraphicsResourceGetMappedPointer((void**)&d_positions_vbo, &num_bytes, cuda_vbo_resource));
 
 	// Allocate memory on the device
 	// Crucial: Use CUDA_CHECK for all CUDA API calls for proper error handling.
@@ -318,8 +367,8 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
     // cudaDeviceSynchronize blocks the CPU until all GPU tasks are finished.
     CUDA_CHECK(cudaDeviceSynchronize());
 
-	// HERE could be another kernel to execute, maybe using the same data!
-	// (define another __global__ before)
+	// 3. Unmap the VBO. This makes it available for OpenGL again.
+    CUDA_CHECK(cudaGraphicsUnmapResources(1, &cuda_vbo_resource, 0));  // ??
 
     // Copy data back from device to host
     // Arguments: destination, source, size, direction (device to host)
@@ -341,6 +390,18 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
 
 }
 
+// Lastly
+void cleanupCudaGLInterop(GLuint vboID, struct cudaGraphicsResource* cuda_vbo_resource) {
+    // 1. Unregister CUDA graphics resource
+    if (cuda_vbo_resource) {
+        CUDA_CHECK(cudaGraphicsUnregisterResource(cuda_vbo_resource));
+    }
+
+    // 2. Delete OpenGL VBO
+    if (vboID) {
+        GL_CHECK(glDeleteBuffers(1, &vboID));
+    }
+}
 
 
 

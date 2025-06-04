@@ -19,20 +19,130 @@
 #include <iostream>
 #include <fstream>
 #include <sys/stat.h> 
-#include <sys/types.h> // write
-#include <iostream>
-#include <fstream>
-#include <sys/stat.h>
+#include <sys/types.h>
 
 #include <immintrin.h>
 
 // Include CUDA_UTILS...
 #include "cuda_utils.h" // Include the header for CUDA wrapper functions
 
+// News:
+#include <sstream>
+#include <chrono> // For high-resolution timing
+
+// Include GLFW for windowing and OpenGL context
+#include <GLFW/glfw3.h>
+
+// Include GLEW for modern OpenGL function pointers
+#include <GL/glew.h>
+
+// Include Dear ImGui
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
+
 #ifndef M
 #define M 4
 #endif
 #define K 8
+
+// ------------------------------------
+// ------------------------------------
+
+// GUI Shenanigans
+int g_num_particles = M * 1024; // Initial number of particles
+GLuint g_VBO_ID = 0;
+cudaGraphicsResource* g_cuda_vbo_resource = nullptr;
+float g_particle_size = 1.0f; // Default particle size
+float g_time_step = 1e-4f;   // Simulation time step
+bool g_paused = false;
+
+// More things. Utilities:
+// OpenGL shader program ID
+GLuint g_shader_program = 0;
+// Uniform locations
+GLint g_projection_loc = -1;
+GLint g_modelview_loc = -1;
+GLint g_particle_size_loc = -1;
+
+// --- Utility Functions ---
+
+// Function to check for OpenGL errors
+void GLAPIENTRY MessageCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam) {
+    fprintf(stderr, "GL CALLBACK: %s type = 0x%x, severity = 0x%x, message = %s\n",
+            (type == GL_DEBUG_TYPE_ERROR ? "** GL ERROR **" : ""),
+            type, severity, message);
+}
+
+// Function to load shader from file
+std::string loadShaderSource(const std::string& filepath) {
+    std::ifstream file(filepath);
+    if (!file.is_open()) {
+        std::cerr << "Error: Could not open shader file: " << filepath << std::endl;
+        return "";
+    }
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    return buffer.str();
+}
+
+// Function to compile a shader
+GLuint compileShader(const std::string& source, GLenum type) {
+    GLuint shader = glCreateShader(type);
+    const char* src = source.c_str();
+    glShaderSource(shader, 1, &src, NULL);
+    glCompileShader(shader);
+
+    GLint success;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        char infoLog[512];
+        glGetShaderInfoLog(shader, 512, NULL, infoLog);
+        std::cerr << "Shader compilation error (" << (type == GL_VERTEX_SHADER ? "Vertex" : "Fragment") << "):\n" << infoLog << std::endl;
+        glDeleteShader(shader);
+        return 0;
+    }
+    return shader;
+}
+
+// Function to create a shader program
+GLuint createShaderProgram(const std::string& vertexPath, const std::string& fragmentPath) {
+    std::string vertexSource = loadShaderSource(vertexPath);
+    std::string fragmentSource = loadShaderSource(fragmentPath);
+
+    if (vertexSource.empty() || fragmentSource.empty()) {
+        return 0;
+    }
+
+    GLuint vertexShader = compileShader(vertexSource, GL_VERTEX_SHADER);
+    GLuint fragmentShader = compileShader(fragmentSource, GL_FRAGMENT_SHADER);
+
+    if (vertexShader == 0 || fragmentShader == 0) {
+        return 0;
+    }
+
+    GLuint program = glCreateProgram();
+    glAttachShader(program, vertexShader);
+    glAttachShader(program, fragmentShader);
+    glLinkProgram(program);
+
+    GLint success;
+    glGetProgramiv(program, GL_LINK_STATUS, &success);
+    if (!success) {
+        char infoLog[512];
+        glGetProgramInfoLog(program, 512, NULL, infoLog);
+        std::cerr << "Shader program linking error:\n" << infoLog << std::endl;
+        glDeleteProgram(program);
+        return 0;
+    }
+
+    glDeleteShader(vertexShader);
+    glDeleteShader(fragmentShader);
+
+    return program;
+}
+// ------------------------------------
+// ------------------------------------
 
 // Unidades: [km/s pc M_sun Myr]...
 // ¿Define a cada step estos valores?
@@ -156,52 +266,226 @@ void SPH::run()
 {
    int stepCount = 0;
 
-   // Create directory ./out
-   
-   /*
-   
-   const char *path = "out";
-   int result = mkdir(path, 0777);
-   if (result == 0)
-      std::cout << "Directory created" << std::endl;
-   else
-      std::cout << "Directory already exists" << std::endl;
-
-   // Create files
-   std::ofstream outfile1("out/energy.txt");
-   outfile1 << "Step, Kinetic Energy, Potential Energy, Total Energy" << std::endl;
-   std::ofstream outfile2("out/angularmomentum.txt");
-   outfile2 << "Step, Angular Momentum" << std::endl;
-   std::ofstream outfile3("out/timing.txt");
-   outfile3 << "Step, Voxelize, Find Neighbors, Compute Density, Compute Pressure, Compute Acceleration, Integrate" << std::endl;
-   std::ofstream outfile4("out/neighbors.txt");
-   
-   */
-
-   while(!isStopped() && stepCount <= totalSteps)
-   {
-      if (!isPaused())
-      {
-         step();
-         
-         /*
-         outfile1 << stepCount << ", " << mKineticEnergyTotal << ", " << mPotentialEnergyTotal << ", " << mKineticEnergyTotal + mPotentialEnergyTotal << std::endl;
-         outfile2 << stepCount << ", " << mAngularMomentumTotal.length() << std::endl;
-         outfile3 << stepCount << ", " << timeVoxelize << ", " << timeFindNeighbors << ", " << timeComputeDensity << ", " << timeComputePressure << ", " << timeComputeAcceleration << ", " << timeIntegrate << std::endl;
-         */
-         
-         stepCount++;
-      }
+   // --- 1. Initialize GLFW ---
+   if (!glfwInit()) {
+      std::cerr << "Failed to initialize GLFW" << std::endl;
+      return -1;
    }
 
-   /*
-   outfile1.close();
-   outfile2.close();
-   outfile3.close();
-   outfile4.close();
-   */
+   // Set OpenGL version for GLFW (e.g., OpenGL 3.3 Core Profile)
+   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+   glfwWindowHint(GLFW_SAMPLES, 4); // Enable MSAA for smoother edges
+
+   // --- 2. Create a GLFW Window ---
+   GLFWwindow* window = glfwCreateWindow(1280, 720, "CUDA SPH Simulation", NULL, NULL);
+   if (!window) {
+      std::cerr << "Failed to create GLFW window" << std::endl;
+      glfwTerminate();
+      return -1;
+   }
+   glfwMakeContextCurrent(window);
+   glfwSwapInterval(1); // Enable vsync
+
+   // --- 3. Initialize GLEW (for modern OpenGL functions) ---
+   glewExperimental = GL_TRUE; // Needed for core profile
+   if (glewInit() != GLEW_OK) {
+      std::cerr << "Failed to initialize GLEW" << std::endl;
+      return -1;
+   }
+
+   // Enable debug output for OpenGL errors (useful during development)
+   glEnable(GL_DEBUG_OUTPUT);
+   glDebugMessageCallback(MessageCallback, 0);
+
+   // --- 4. Initialize Dear ImGui ---
+   IMGUI_CHECKVERSION();
+   ImGui::CreateContext();
+   ImGuiIO& io = ImGui::GetIO(); (void)io;
+   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; // Enable Keyboard Controls
+   io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;  // Enable Gamepad Controls
+
+   // Setup Platform/Renderer backends
+   ImGui_ImplGlfw_InitForOpenGL(window, true); // true for install_callbacks
+   ImGui_ImplOpenGL3_Init("#version 330 core"); // Match your GLSL version
+
+   // --- 5. Setup OpenGL Rendering State ---
+   glEnable(GL_DEPTH_TEST); // Enable depth testing for 3D
+   glEnable(GL_PROGRAM_POINT_SIZE); // Enable point size control in vertex shader
+   glEnable(GL_BLEND); // Enable blending for alpha (if you want transparent particles)
+   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+   // --- 6. Initialize CUDA-OpenGL Interoperability ---
+   g_VBO_ID = initCudaGLInterop(g_num_particles, &g_cuda_vbo_resource);
+   if (g_VBO_ID == 0) {
+      std::cerr << "Failed to initialize CUDA-OpenGL interoperability." << std::endl;
+      // Cleanup already handled by CUDA_CHECK/GL_CHECK macros
+      return -1;
+   }
+
+   // --- 7. Load and Compile Shaders ---
+   g_shader_program = createShaderProgram("shaders/particle.vert", "shaders/particle.frag");
+   if (g_shader_program == 0) {
+      std::cerr << "Failed to create shader program." << std::endl;
+      cleanupCudaGLInterop(g_VBO_ID, g_cuda_vbo_resource);
+      ImGui_ImplOpenGL3_Shutdown();
+      ImGui_ImplGlfw_Shutdown();
+      ImGui::DestroyContext();
+      glfwTerminate();
+      return -1;
+   }
+
+   // Get uniform locations
+   g_projection_loc = glGetUniformLocation(g_shader_program, "u_projection");
+   g_modelview_loc = glGetUniformLocation(g_shader_program, "u_modelview");
+   g_particle_size_loc = glGetUniformLocation(g_shader_program, "u_particleSize");
+
+   // --- 8. Main Simulation and Rendering Loop ---
+   auto last_time = std::chrono::high_resolution_clock::now();
+
+   while (!glfwWindowShouldClose(window) && stepCount <= totalSteps)
+   {
+      // Calculate deltaTime
+      auto current_time = std::chrono::high_resolution_clock::now();
+      float frame_delta_time = std::chrono::duration<float>(current_time - last_time).count();
+      last_time = current_time;
+
+      // --- ImGui New Frame ---
+      ImGui_ImplOpenGL3_NewFrame();
+      ImGui_ImplGlfw_NewFrame();
+      ImGui::NewFrame();
+
+      // --- ImGui GUI Definition ---
+      ImGui::Begin("Simulation Controls");
+      ImGui::Text("Particles: %d", g_num_particles); // Display current particle count
+      ImGui::SliderFloat("Particle Size", &g_particle_size, 0.1f, 10.0f);
+      ImGui::SliderFloat("Time Step", &g_time_step, 0.0001f, 0.01f, "%.4f");
+      ImGui::Checkbox("Pause Simulation", &g_paused);
+      if (ImGui::Button("Reset Particles")) {
+         // Re-initialize particles if needed (requires re-mapping VBO and launching init kernel)
+         // For simplicity, we'll just re-call initCudaGLInterop (which re-initializes positions)
+         cleanupCudaGLInterop(g_VBO_ID, g_cuda_vbo_resource); // Clean up old VBO/resource
+         g_VBO_ID = initCudaGLInterop(g_num_particles, &g_cuda_vbo_resource); // Create new one
+      }
+      ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
+      ImGui::End();
+
+      // --- 9. Update Particle Positions on GPU (if not paused) ---
+      if (!g_paused)
+      {
+         // Mine
+         launchMyKernel(mSrcParticles->mPosition.data(), mSrcParticles->mVelocity.data(), mSrcParticles->mAcceleration.data(),
+                     mSrcParticles->mMass.data(), mSrcParticles->mDensity.data(),
+                     mParticleCount, mSimulationScale, mSoftening, mGravConstant,
+                     mCentralMass, mTimeStep, mCentralPos[0], mCentralPos[1], mCentralPos[2],
+                     mH, mH2, mHScaled9, mKernel1Scaled, mKernel2Scaled, mKernel3Scaled,
+                     mRho0, mViscosityScalar, mStiffness);
+
+         // Template
+         updateParticlePositionsOnGPU(g_cuda_vbo_resource, g_num_particles, g_time_step);
+      }
+
+      // --- 10. OpenGL Rendering ---
+      glClearColor(0.1f, 0.1f, 0.1f, 1.0f); // Dark background
+      glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+      glUseProgram(g_shader_program);
+
+      // Setup simple projection and modelview matrices
+      // Orthographic projection for 2D-like view
+      float aspect_ratio = (float)io.DisplaySize.x / (float)io.DisplaySize.y;
+      glm::mat4 projection = glm::ortho(-aspect_ratio, aspect_ratio, -1.0f, 1.0f, -1.0f, 1.0f);
+      // Basic modelview matrix (identity for now, particles centered at origin)
+      glm::mat4 modelview = glm::mat4(1.0f); // Identity matrix
+
+      glUniformMatrix4fv(g_projection_loc, 1, GL_FALSE, glm::value_ptr(projection));
+      glUniformMatrix4fv(g_modelview_loc, 1, GL_FALSE, glm::value_ptr(modelview));
+      glUniform1f(g_particle_size_loc, g_particle_size);
+
+      // Bind the VBO containing particle positions
+      glBindBuffer(GL_ARRAY_BUFFER, g_VBO_ID);
+      // Enable vertex attribute array for position (location 0 in shader)
+      glEnableVertexAttribArray(0);
+      // Specify the layout of the position data in the VBO
+      glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+
+      // Draw the particles as points
+      glDrawArrays(GL_POINTS, 0, g_num_particles);
+
+      // Cleanup after drawing
+      glDisableVertexAttribArray(0);
+      glBindBuffer(GL_ARRAY_BUFFER, 0);
+      glUseProgram(0); // Deactivate shader program
+
+      // --- 11. ImGui Rendering ---
+      ImGui::Render();
+      ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+      // --- 12. Swap Buffers and Poll Events ---
+      glfwSwapBuffers(window);
+      glfwPollEvents();
+   }
+
+   // --- 13. Cleanup ---
+   cleanupCudaGLInterop(g_VBO_ID, g_cuda_vbo_resource);
+
+   ImGui_ImplOpenGL3_Shutdown();
+   ImGui_ImplGlfw_Shutdown();
+   ImGui::DestroyContext();
+
+   glfwDestroyWindow(window);
+   glfwTerminate();
+
+   return 0;
    
 }
+
+/*
+Note on glm: The sph.cpp example uses glm (OpenGL Mathematics) for matrix operation
+(glm::mat4, glm::ortho, glm::value_ptr). You'll need to install GLM if you don't have it.
+It's a header-only library, so usually just including the headers is enough.
+
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
+*/
+
+/*
+To compile:
+nvcc -c cuda_utils.cu -o cuda_utils.o -arch=sm_75
+# Replace sm_75 with your GPU's compute capability (e.g., sm_86 for RTX 30 series)
+
+Compile C++ source (.cpp file) and link everything:
+g++ sph.cpp cuda_utils.o -o sph_sim \
+    -I/usr/local/cuda/include \
+    -I/path/to/glfw/include \
+    -I/path/to/glew/include \
+    -I/path/to/imgui/include \
+    -I/path/to/glm/include \
+    -L/usr/local/cuda/lib64 \
+    -L/path/to/glfw/lib \
+    -L/path/to/glew/lib \
+    -L/path/to/imgui/lib \
+    -lGLEW -lglfw -lGL -lcudart -lcuda -lImGui -lImGui_glfw -lImGui_opengl3
+
+Adjust paths (/path/to/...) to where your GLFW, GLEW, ImGui, and GLM libraries/headers are located.
+
+... or:
+g++ sph.cpp cuda_utils.o \
+    /path/to/imgui/imgui.cpp \
+    /path/to/imgui/imgui_draw.cpp \
+    /path/to/imgui/imgui_widgets.cpp \
+    /path/to/imgui/imgui_impl_glfw.cpp \
+    /path/to/imgui/imgui_impl_opengl3.cpp \
+    -o sph_sim \
+    # ... (your include and library paths) ...
+    -lGLEW -lglfw -lGL -lcudart -lcuda
+
+Run the executable as always
+./sph
+
+*/
 
 // El main loop va a la GPU!
 void SPH::step()
