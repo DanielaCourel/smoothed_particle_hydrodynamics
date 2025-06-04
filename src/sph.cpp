@@ -203,7 +203,7 @@ void SPH::run()
    
 }
 
-
+// El main loop va a la GPU!
 void SPH::step()
 {
    timeVoxelize = 0;
@@ -213,21 +213,17 @@ void SPH::step()
    timeComputeAcceleration = 0;
    timeIntegrate = 0;
    QElapsedTimer t;
-   
-   // Only for debugging physical props
-   /*
-   mKineticEnergyTotal = 0.0f;
-   mPotentialEnergyTotal = 0.0f;
-   mAngularMomentumTotal = vec3(0.0f, 0.0f, 0.0f);
-   */
+
+   /* Ahora no!
 
    // put particles into voxel grid
    t.start();
    voxelizeParticles();
    timeVoxelize = t.nsecsElapsed() / 1000000;
-   
+
    // time all the //-zone as a whole:
    t.start();
+
    #pragma omp parallel 
    {
       // find neighboring particles
@@ -259,30 +255,25 @@ void SPH::step()
          //computeAcceleration(particleIndex, neighbors, neighborDistances);
          computeAcceleration(particleIndex, neighbors);
       }
-      
-      /*
-      // integrate (after computeAccel for the system)
-      #pragma omp for schedule(guided)
-      for (int particleIndex = 0; particleIndex < mParticleCount; particleIndex++)
-      {
-         integrate(particleIndex);
-      }
-   }
-	  */
 
    } // End parallel -> gravity + integrate va a la GPU!
    
    timeFindNeighbors = t.nsecsElapsed() / 1000000;
+
+   */
    
 	// time all the GPU-zone as a whole:
 	t.start();
 	
-    // Kernel! (se encarga de todo...)
-    // Son "std::vector<float>", asi que así pedimos los punteros a la 1ra direc de memoria
-    // (También podría hacer "&vector[0]"...)
-    launchMyKernel(mSrcParticles->mPosition.data(), mSrcParticles->mVelocity.data(), mSrcParticles->mAcceleration.data(),
-				mParticleCount, mSimulationScale, mSoftening, mGravConstant,
-				mCentralMass, mTimeStep, mCentralPos[0], mCentralPos[1], mCentralPos[2]);
+   // Kernel! (se encarga de todo...)
+   // Son "std::vector<float>", asi que así pedimos los punteros a la 1ra direc de memoria
+   // (También podría hacer "&vector[0]"...)
+   launchMyKernel(mSrcParticles->mPosition.data(), mSrcParticles->mVelocity.data(), mSrcParticles->mAcceleration.data(),
+         mSrcParticles->mMass.data(), mSrcParticles->mDensity.data(),
+         mParticleCount, mSimulationScale, mSoftening, mGravConstant,
+         mCentralMass, mTimeStep, mCentralPos[0], mCentralPos[1], mCentralPos[2],
+         mH, mH2, mHScaled9, mKernel1Scaled, mKernel2Scaled, mKernel3Scaled,
+         mRho0, mViscosityScalar);
 				
 	timeIntegrate = t.nsecsElapsed() / 1000000;
 	
