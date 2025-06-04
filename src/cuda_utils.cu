@@ -284,7 +284,7 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
 	cudaMemcpyToSymbol(mRho0, &h_mRho0, sizeof(float), 0, cudaMemcpyHostToDevice);
 	cudaMemcpyToSymbol(mViscosityScalar, &h_mViscosityScalar, sizeof(float), 0, cudaMemcpyHostToDevice);
 	cudaMemcpyToSymbol(mStiffness, &h_mStiffness, sizeof(float), 0, cudaMemcpyHostToDevice);
-	
+
 
 	// Define grid and block dimensions for kernel execution
 	// A block is a group of threads that can cooperate.
@@ -302,8 +302,7 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
     // cudaDeviceSynchronize blocks the CPU until all GPU tasks are finished.
     CUDA_CHECK(cudaDeviceSynchronize());
 
-	integrate_CUDA<<<blocksPerGrid, threadsPerBlock>>>(device_pos, device_vel, device_acc,
-												device_mass, device_dens);												
+	integrate_CUDA<<<blocksPerGrid, threadsPerBlock>>>(device_pos, device_vel, device_acc);												
     
     // Synchronize the device to ensure all kernel operations are complete
     // cudaDeviceSynchronize blocks the CPU until all GPU tasks are finished.
