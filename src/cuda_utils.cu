@@ -120,13 +120,11 @@ __global__ void neighbors_CUDA(float* position, float* mass, float* density)
 	s_localPositions[3*localThreadId + 2] = position[3*tid + 2];
 
 	s_localMasses[localThreadId] = mass[tid];
-	s_localDensities[localThreadId] = density[tid];
+	s_localDensities[localThreadId] = 0.f;
 
     __syncthreads(); // Ensure all shared memory loads are complete before any thread uses them
 
 	// vars def thread-wise.
-	s_localDensities[localThreadId] = 0.f;  // Compute this step-by-step
-
 	float distance_ij3, distance, invDist;
 	float rightPart, w;
 	float rMinusRjScaled[3];	
@@ -198,7 +196,7 @@ __global__ void neighbors_CUDA(float* position, float* mass, float* density)
 		*/
 
 		// Then, back to the basics:
-		s_localDensities[localThreadId] += 1 * (distance_ij3 < h_krnl2);
+		s_neighbor_count[localThreadId] += 1 * (distance_ij3 < h_krnl2);
 
 	}
 
@@ -390,7 +388,7 @@ __global__ void hydro_CUDA(float* position, float* velocity, float* acceleration
 		*/
 
 		// Then, back to the basics:
-		s_localDensities[localThreadId] += 1 * (distance_ij3 < h_krnl2);
+		s_neighbor_count[localThreadId] += 1 * (distance_ij3 < h_krnl2);
 
 	}
 
@@ -605,7 +603,7 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
 
 	// Me está dando bola la parte hydro?
 	printf("Density 1st particle:\n");
-    printf("Particle %d acc: %.2f\n", 0, h_density[i]);
+    printf("Particle %d rho: %.2f\n", 0, h_density[0]);
 
     // Free device memory
     // It's crucial to free allocated GPU memory to prevent memory leaks.
