@@ -74,13 +74,39 @@ __global__ void neighbors_CUDA(float* position, float* mass, float* density)
 
 	// 1st, necesito allocar la memoria que solo va a tocar este bloque (contigua!):
 	// Each thread helps load a local reference.
-    __shared__ float s_localPositions[3 * dim_block];  // (x,y,z)
-	__shared__ float s_localMasses[dim_block];
-	__shared__ float s_localDensities[dim_block];
-	// If I want dynamic shared memory -> "extern" and pass it when calling the kernel
+	// __shared__ float s_localPositions[3 * dim_block];  // (x,y,z)
+	// __shared__ float s_localMasses[dim_block];
+	// __shared__ float s_localDensities[dim_block];
+
+	// ...but only 1 big extern shared:
+    extern __shared__ char shared_buffer[];
+
+	// Offsets: Calculate the size of each component in bytes:
+    size_t vector_bytes = 3 * dim_block * sizeof(float);
+    size_t scalar_bytes = dim_block * sizeof(float);
+
+	// Calculate start addresses for each array within the buffer
+    // The first array starts at the beginning
+    char* current_ptr = shared_buffer;
+	// s_localPositions starts at the beginning
+    float* s_localPositions = (float*)current_ptr;
+    current_ptr += vector_bytes; // Advance pointer past positions
+    float* s_localMasses = (float*)current_ptr;
+    current_ptr += scalar_bytes; // Advance pointer past masses
+    float* s_localDensities = (float*)current_ptr;
+
+	// Now I can use s_localPositions, s_localMasses and s_localDensities
+    // just like regular arrays within the kernel...
+
+	// I have to create an array of "neighbor_counts" to allow the warp to see the leader's neighbcount!!!
+	// ...within the block, as always.
+	current_ptr += scalar_bytes; // Advance pointer past densities
+    int* s_neighbor_count = (int*)current_ptr;
 
 	// Thread index within the block
     int localThreadId = threadIdx.x;
+
+	s_neighbor_count[localThreadId] = 0;  // Now, all threads within a warp can access this.
 
     // Load local reference particles into shared memory
     // Fetch particles from global memory into shared memory.
@@ -95,11 +121,6 @@ __global__ void neighbors_CUDA(float* position, float* mass, float* density)
 
 	s_localMasses[localThreadId] = mass[tid];
 	s_localDensities[localThreadId] = density[tid];
-
-	// I have to create an array of "neighbor_counts" to allow the warp to see the leader's neighbcount!!!
-	// ...within the block, as always.
-	__shared__ int s_neighbor_count[dim_block];
-	s_neighbor_count[localThreadId] = 0;  // Now, all threads within a warp can access this.
 
     __syncthreads(); // Ensure all shared memory loads are complete before any thread uses them
 
@@ -177,7 +198,7 @@ __global__ void neighbors_CUDA(float* position, float* mass, float* density)
 
 	// Every thread of the block writes in its own place the results from shared memory
     // to global memory.
-	density[tid] = s_localDensities[localThreadId]
+	density[tid] = s_localDensities[localThreadId];
 
 }
 
@@ -195,14 +216,42 @@ __global__ void hydro_CUDA(float* position, float* velocity, float* acceleration
 
 	// 1st, necesito allocar la memoria que solo va a tocar este bloque (contigua!):
 	// Each thread helps load a local reference.
-    __shared__ float s_localPositions[3 * dim_block];  // (x,y,z)
+    /*
+	__shared__ float s_localPositions[3 * dim_block];  // (x,y,z)
 	__shared__ float s_localVelocities[3 * dim_block];  // (vx,vy,vz)
 	__shared__ float s_localMasses[dim_block];
 	__shared__ float s_localDensities[dim_block];
-	// If I want dynamic shared memory -> "extern" and pass it when calling the kernel
+	*/
+	
+	// ...but only 1 big extern shared:
+    extern __shared__ char shared_buffer[];
+
+	// Offsets: Calculate the size of each component in bytes:
+    size_t vector_bytes = 3 * dim_block * sizeof(float);
+    size_t scalar_bytes = dim_block * sizeof(float);
+
+	// Calculate start addresses for each array within the buffer
+    // The first array starts at the beginning
+    char* current_ptr = shared_buffer;
+	// s_localPositions starts at the beginning
+    float* s_localPositions = (float*)current_ptr;
+    current_ptr += vector_bytes; // Advance pointer past positions
+	float* s_localVelocities = (float*)current_ptr;
+    current_ptr += vector_bytes; // Advance pointer past velocities
+    float* s_localMasses = (float*)current_ptr;
+    current_ptr += scalar_bytes; // Advance pointer past masses
+    float* s_localDensities = (float*)current_ptr;
+	current_ptr += scalar_bytes; // Advance pointer past densities
+    int* s_neighbor_count = (int*)current_ptr;
+
+	// I have to create an array of "neighbor_counts" to allow the warp to see the leader's neighbcount!!!
+	// ...within the block, as always.
+	/* __shared__ int s_neighbor_count[dim_block]; */
 
 	// Thread index within the block
     int localThreadId = threadIdx.x;
+
+	s_neighbor_count[localThreadId] = 0;  // Now, all threads within a warp can access this.
 
     // Load local reference particles into shared memory
     // Fetch particles from global memory into shared memory.
@@ -222,18 +271,12 @@ __global__ void hydro_CUDA(float* position, float* velocity, float* acceleration
 	s_localMasses[localThreadId] = mass[tid];
 	s_localDensities[localThreadId] = density[tid];
 
-	// I have to create an array of "neighbor_counts" to allow the warp to see the leader's neighbcount!!!
-	// ...within the block, as always.
-	__shared__ int s_neighbor_count[dim_block];
-	s_neighbor_count[localThreadId] = 0;  // Now, all threads within a warp can access this.
-
     __syncthreads(); // Ensure all shared memory loads are complete before any thread uses them
 
 	// vars def thread-wise.
 	float distance_ij3, distance, invDist;
 	float rightPart, w, pi, rhoiInv, rhoiInv2, piDivRhoi2;
 	float centerPart, mj, pj, rhojInv, rhojInv2;
-	float piDivRhoi2, rhoiInv, ;
 	float rMinusRjScaled[3];
 
 	pi = (s_localDensities[localThreadId] - mRho0) * mStiffness;  // One-liner...
@@ -495,17 +538,29 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
 	// The number of blocks is calculated to cover all elements.
 	int threadsPerBlock = 256;
 	int blocksPerGrid = (N + threadsPerBlock - 1) / threadsPerBlock; // Ceiling division
+
+	// Alloco la memoria del buffer (!)
+	// Calculate component sizes in bytes
+	size_t vector_bytes = 3 * threadsPerBlock * sizeof(float);
+	size_t scalar_bytes = threadsPerBlock * sizeof(float);
+
+	// Calculate total required shared memory bytes (including padding if applied)
+	// pos, dens, mass, neighb
+	size_t total_shared_mem_bytes_neighbors = vector_bytes + scalar_bytes + scalar_bytes + scalar_bytes;
+	// pos, vel, dens, mass, neighb
+	size_t total_shared_mem_bytes_hydro = vector_bytes + vector_bytes + scalar_bytes + scalar_bytes + scalar_bytes;
+	// integrate no usa buffers (!)
 	
 	// Launch the kernel(s)
 	// 1st: neighbors + density!
-	neighbors_CUDA<<<blocksPerGrid, threadsPerBlock>>>(device_pos, device_mass, device_dens);
+	neighbors_CUDA<<<blocksPerGrid, threadsPerBlock, total_shared_mem_bytes_neighbors>>>(device_pos, device_mass, device_dens);
 
 	// Synchronize the device to ensure all kernel operations are complete
     // cudaDeviceSynchronize blocks the CPU until all GPU tasks are finished.
     CUDA_CHECK(cudaDeviceSynchronize());
 
 	// 2nd: hydro!
-	hydro_CUDA<<<blocksPerGrid, threadsPerBlock>>>(device_pos, device_vel, device_acc,
+	hydro_CUDA<<<blocksPerGrid, threadsPerBlock, total_shared_mem_bytes_hydro>>>(device_pos, device_vel, device_acc,
 														device_mass, device_dens);
 
 	// Synchronize the device to ensure all kernel operations are complete
