@@ -60,7 +60,129 @@ NEW: Como el findNeighbors() es muy hincha bolas, y quiero mergear todas las fun
 
 // NEW: separo la accel por vecinos de la grav central? Quiero aprovechar al máximo
 // los blocks como working-units, y usar ~intrinsics de warps!!!
-__global__ void neighbors_CUDA(float* position, float* velocity, float* acceleration,
+
+// So: 1st neigh + densities; 2nd hydro; 3rd grav + integ
+__global__ void neighbors_CUDA(float* position, float* mass, float* density)
+{
+	// Thread ID - global!
+	int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+	if (tid >= cant_particles) return;
+
+	// Within a block, min(tid) = 0; max(tid) = dim(block)
+	int dim_block = blockDim.x;
+
+	// 1st, necesito allocar la memoria que solo va a tocar este bloque (contigua!):
+	// Each thread helps load a local reference.
+    __shared__ float s_localPositions[3 * dim_block];  // (x,y,z)
+	__shared__ float s_localMasses[dim_block];
+	__shared__ float s_localDensities[dim_block];
+	// If I want dynamic shared memory -> "extern" and pass it when calling the kernel
+
+	// Thread index within the block
+    int localThreadId = threadIdx.x;
+
+    // Load local reference particles into shared memory
+    // Fetch particles from global memory into shared memory.
+    // This assumes local references are contiguous in global memory,
+    // or that each block is given a pointer to its own local reference set.
+    // For this example, let's assume each block is responsible for
+    // a segment of the global input particles, and these are its "references".
+    // Assume (localThreadId < numLocalReferencesPerBlock)...
+	s_localPositions[3*localThreadId + 0] = position[3*tid + 0];
+	s_localPositions[3*localThreadId + 1] = position[3*tid + 1];
+	s_localPositions[3*localThreadId + 2] = position[3*tid + 2];
+
+	s_localMasses[localThreadId] = mass[tid];
+	s_localDensities[localThreadId] = density[tid];
+
+	// I have to create an array of "neighbor_counts" to allow the warp to see the leader's neighbcount!!!
+	// ...within the block, as always.
+	__shared__ int s_neighbor_count[dim_block];
+	s_neighbor_count[localThreadId] = 0;  // Now, all threads within a warp can access this.
+
+    __syncthreads(); // Ensure all shared memory loads are complete before any thread uses them
+
+	// vars def thread-wise.
+	s_localDensities[localThreadId] = 0.f;  // Compute this step-by-step
+
+	float distance_ij3, distance, invDist;
+	float rightPart, w;
+	float rMinusRjScaled[3];	
+
+	// Main loop - block-wise (Ojo iters!)
+	// Acá deberían ir de a 32 threads...
+	for (int j = 0; j < dim_block; j++)
+	{
+		// Este break es thread-wise (privado), y tiene que venir al principio y NO al final (así
+		// no queda ningún worker trabajando al pedo)
+		if (s_neighbor_count[localThreadId] > 32) break;
+
+		rMinusRjScaled[0] = (s_localPositions[3*localThreadId + 0] - s_localPositions[3*j + 0]) * scale;
+        rMinusRjScaled[1] = (s_localPositions[3*localThreadId + 1] - s_localPositions[3*j + 1]) * scale;
+        rMinusRjScaled[2] = (s_localPositions[3*localThreadId + 2] - s_localPositions[3*j + 2]) * scale;
+
+		distance_ij3 = rMinusRjScaled[0] * rMinusRjScaled[0] +\
+						rMinusRjScaled[1] * rMinusRjScaled[1] +\
+						rMinusRjScaled[2] * rMinusRjScaled[2] + softening;  // This is SQUARED
+		distance = sqrtf(distance_ij3);  // This is the true d_ij
+		invDist = rsqrtf(distance_ij3);  // quick x^(-1/2)
+
+		// From this, I can (branchless-ly) compute hydro properties (!)
+		// Density:
+		rightPart = h_krnl2 - distance_ij3;
+		rightPart = rightPart * rightPart * rightPart;
+		w = mKernel1Scaled * rightPart * (distance_ij3 < h_krnl2);  // true => 1, false => 0 (!)
+		// apply weighted neighbor mass to our density
+		s_localDensities[localThreadId] += (s_localMasses[localThreadId] * w);  // 0. if (d^2 >= h^2)
+
+		// Acá puedo hacer un mask (ya que en este loop vienen actuando warps de 32-threads)
+		// y preg cuáles de ellos suman a valid neighbors:
+
+		// Mask of active threads in the warp
+    	unsigned int active_threads_mask = __activemask();
+
+		// Perform a warp-wide ballot to see which threads meet the condition
+		// (true (non-zero) or false (zero) for each thread).
+		// The result 'condition_mask' is a 32-bit integer where bit 'i' is set
+		// if thread 'i' in the warp met the condition.
+
+		// Def the condition:
+		bool valid_neighbor = (distance_ij3 < h_krnl2);
+		// Ask them:
+		unsigned int condition_mask = __ballot_sync(active_threads_mask, valid_neighbor);
+		// __popc() to count how many threads in this warp met the condition:
+    	int num_threads_meeting_condition = __popc(condition_mask);
+
+		// Only the warp leader count its private counter!
+		// =/= a LocalID == 0 !!!
+		if (localThreadId % 32 == 0)
+		{
+			// Atomically add to a global or shared counter for this shared target particle
+			// This ensures the sum for the warp's contributions is added only once
+			atomicAdd(&s_neighbor_count[localThreadId], num_threads_meeting_condition);
+		}
+
+		// It's crucial to synchronize threads *after* the atomicAdd if *all* threads
+        // need to see the *updated* shared count before the next iteration of the loop.
+        // Without this, some threads might read an old value of s_shared_neighbor_count[LocalID]
+        // at the start of the next iteration, potentially missing the break condition.
+        __syncthreads(); // Synchronize all threads in the block to see the updated count
+
+	}
+
+	// Finish parte hydro, aparte haremos la accel central desp...
+	// Assert que todos los del bloque terminaron de escribir previous to write globally!
+	__syncthreads();
+
+	// Every thread of the block writes in its own place the results from shared memory
+    // to global memory.
+	density[tid] = s_localDensities[localThreadId]
+
+}
+
+// Ahora si: 2nd hydro (re-computo distancia, no hay con qué darle por ahora...)
+__global__ void hydro_CUDA(float* position, float* velocity, float* acceleration,
 							float* mass, float* density)
 {
 	// Thread ID - global!
@@ -75,7 +197,6 @@ __global__ void neighbors_CUDA(float* position, float* velocity, float* accelera
 	// Each thread helps load a local reference.
     __shared__ float s_localPositions[3 * dim_block];  // (x,y,z)
 	__shared__ float s_localVelocities[3 * dim_block];  // (vx,vy,vz)
-	__shared__ float s_localAccels[3 * dim_block];  // (ax,ay,az)
 	__shared__ float s_localMasses[dim_block];
 	__shared__ float s_localDensities[dim_block];
 	// If I want dynamic shared memory -> "extern" and pass it when calling the kernel
@@ -109,9 +230,22 @@ __global__ void neighbors_CUDA(float* position, float* velocity, float* accelera
     __syncthreads(); // Ensure all shared memory loads are complete before any thread uses them
 
 	// vars def thread-wise.
-	s_localDensities[localThreadId] = 0.f;
-	float distance_ij3;
-	float rMinusRjScaled[3];	
+	float distance_ij3, distance, invDist;
+	float rightPart, w, pi, rhoiInv, rhoiInv2, piDivRhoi2;
+	float centerPart, mj, pj, rhojInv, rhojInv2;
+	float piDivRhoi2, rhoiInv, ;
+	float rMinusRjScaled[3];
+
+	pi = (s_localDensities[localThreadId] - mRho0) * mStiffness;  // One-liner...
+	rhoiInv = ((pi > 0.0f) ? (1.0f / pi) : 1.0f);  // Better?
+	rhoiInv2 = rhoiInv * rhoiInv;
+	piDivRhoi2 = pi * rhoiInv2;
+
+	// Pressure gradient
+	float pressureGradient[3] = {0.0f, 0.0f, 0.0f};
+	float pressureGradientContribution[3];
+	// Viscous term
+	float viscousTerm[3] = {0.0f, 0.0f, 0.0f};
 
 	// Main loop - block-wise (Ojo iters!)
 	// Acá deberían ir de a 32 threads...
@@ -130,14 +264,6 @@ __global__ void neighbors_CUDA(float* position, float* velocity, float* accelera
 						rMinusRjScaled[2] * rMinusRjScaled[2] + softening;  // This is SQUARED
 		distance = sqrtf(distance_ij3);  // This is the true d_ij
 		invDist = rsqrtf(distance_ij3);  // quick x^(-1/2)
-
-		// From this, I can (branchless-ly) compute hydro properties (!)
-		// Density:
-		rightPart = h_krnl2 - distance_ij3;
-		rightPart = rightPart * rightPart * rightPart;
-		w = mKernel1Scaled * rightPart * (distance_ij3 < h_krnl2);  // true => 1, false => 0 (!)
-		// apply weighted neighbor mass to our density
-		s_localDensities[localThreadId] += (s_localMasses[localThreadId] * w);  // 0. if (d^2 >= h^2)
 
 		// Pressure gradient:
 		mj = s_localMasses[localThreadId + j];
@@ -218,6 +344,7 @@ __global__ void neighbors_CUDA(float* position, float* velocity, float* accelera
 }
 
 
+// Lastly: grav + integration (!)
 __global__ void integrate_CUDA(float* position, float* velocity, float* acceleration)
 {
 	// 1st, la 1ra parte grav que me falto desp de la hydro; desp integrate
@@ -370,8 +497,15 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
 	int blocksPerGrid = (N + threadsPerBlock - 1) / threadsPerBlock; // Ceiling division
 	
 	// Launch the kernel(s)
-	// 1st: neighbors!
-	neighbors_CUDA<<<blocksPerGrid, threadsPerBlock>>>(device_pos, device_vel, device_acc,
+	// 1st: neighbors + density!
+	neighbors_CUDA<<<blocksPerGrid, threadsPerBlock>>>(device_pos, device_mass, device_dens);
+
+	// Synchronize the device to ensure all kernel operations are complete
+    // cudaDeviceSynchronize blocks the CPU until all GPU tasks are finished.
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+	// 2nd: hydro!
+	hydro_CUDA<<<blocksPerGrid, threadsPerBlock>>>(device_pos, device_vel, device_acc,
 														device_mass, device_dens);
 
 	// Synchronize the device to ensure all kernel operations are complete
