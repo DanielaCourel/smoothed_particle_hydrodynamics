@@ -132,7 +132,8 @@ __global__ void neighbors_CUDA(float* position, float* mass, float* density)
 	float rMinusRjScaled[3];	
 
 	// Main loop - block-wise (Ojo iters!)
-	// Acá deberían ir de a 32 threads...
+	// Acá deberían ir de a 32 threads...  -> ¡Falso! Hay 32 threads que están haciendo esto
+	// CON SUS PROPIAS PARTÍCULAS !!!
 	for (int j = 0; j < dim_block; j++)
 	{
 		// Este break es thread-wise (privado), y tiene que venir al principio y NO al final (así
@@ -159,6 +160,10 @@ __global__ void neighbors_CUDA(float* position, float* mass, float* density)
 
 		// Acá puedo hacer un mask (ya que en este loop vienen actuando warps de 32-threads)
 		// y preg cuáles de ellos suman a valid neighbors:
+
+		/*
+
+		Como este loop lo está haciendo cada thread (y no de a warps), esto ya no sirve...
 
 		// Mask of active threads in the warp
     	unsigned int active_threads_mask = __activemask();
@@ -189,6 +194,11 @@ __global__ void neighbors_CUDA(float* position, float* mass, float* density)
         // Without this, some threads might read an old value of s_shared_neighbor_count[LocalID]
         // at the start of the next iteration, potentially missing the break condition.
         __syncthreads(); // Synchronize all threads in the block to see the updated count
+
+		*/
+
+		// Then, back to the basics:
+		s_localDensities[localThreadId] += 1 * (distance_ij3 < h_krnl2);
 
 	}
 
@@ -291,7 +301,8 @@ __global__ void hydro_CUDA(float* position, float* velocity, float* acceleration
 	float viscousTerm[3] = {0.0f, 0.0f, 0.0f};
 
 	// Main loop - block-wise (Ojo iters!)
-	// Acá deberían ir de a 32 threads...
+	// Acá deberían ir de a 32 threads...  -> ¡Falso! Hay 32 threads que están haciendo esto
+	// CON SUS PROPIAS PARTÍCULAS !!!
 	for (int j = 0; j < dim_block; j++)
 	{
 		// Este break es thread-wise (privado), y tiene que venir al principio y NO al final (así
@@ -342,6 +353,10 @@ __global__ void hydro_CUDA(float* position, float* velocity, float* acceleration
 		// Acá puedo hacer un mask (ya que en este loop vienen actuando warps de 32-threads)
 		// y preg cuáles de ellos suman a valid neighbors:
 
+		/*
+
+		Como este loop lo está haciendo cada thread (y no de a warps), esto ya no sirve...
+
 		// Mask of active threads in the warp
     	unsigned int active_threads_mask = __activemask();
 
@@ -371,6 +386,11 @@ __global__ void hydro_CUDA(float* position, float* velocity, float* acceleration
         // Without this, some threads might read an old value of s_shared_neighbor_count[LocalID]
         // at the start of the next iteration, potentially missing the break condition.
         __syncthreads(); // Synchronize all threads in the block to see the updated count
+
+		*/
+
+		// Then, back to the basics:
+		s_localDensities[localThreadId] += 1 * (distance_ij3 < h_krnl2);
 
 	}
 
@@ -583,7 +603,9 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
 	CUDA_CHECK(cudaMemcpy(h_mass, device_mass, N * sizeof(float), cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaMemcpy(h_density, device_dens, N * sizeof(float), cudaMemcpyDeviceToHost));
 
-    // "h_position", etc. now contain the updated values from the GPU.
+	// Me está dando bola la parte hydro?
+	printf("Density 1st particle:\n");
+    printf("Particle %d acc: %.2f\n", 0, h_density[i]);
 
     // Free device memory
     // It's crucial to free allocated GPU memory to prevent memory leaks.
