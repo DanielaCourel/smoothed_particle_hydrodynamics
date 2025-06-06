@@ -331,6 +331,9 @@ __global__ void hydro_voxel_CUDA(float* position, float* velocity, float* accele
 	// Viscous term
 	float viscousTerm[3] = {0.0f, 0.0f, 0.0f};
 
+	// A pseudo-softening:
+	float pseudo_soft = 1e-3f;
+
 	// Main loop - Cada loop toca solo la parte del array con los index prev calculated,
 	// haciéndose cargo de 1 partícula...; Quiero barrer la lista de indexes creada (!)
 	int j;
@@ -351,7 +354,9 @@ __global__ void hydro_voxel_CUDA(float* position, float* velocity, float* accele
 						rMinusRjScaled[2] * rMinusRjScaled[2];  // This is SQUARED
 
 		distance = sqrtf(distance_ij3);  // This is the true d_ij
-		invDist = rsqrtf(distance_ij3);  // quick x^(-1/2)
+		//invDist = rsqrtf(distance_ij3);  // quick x^(-1/2)
+		// Cambio esto por un ~softening:
+		invDist = 1.f/(distance + pseudo_soft);
 
 		// Pressure gradient:
 		mj = mass[j];
@@ -377,11 +382,12 @@ __global__ void hydro_voxel_CUDA(float* position, float* velocity, float* accele
 		centerPart *= rhojInv * mj * mKernel3Scaled;  // 0 if d >= h
 
 		// add contribution to viscous term (+0 if d >= h)
-		viscousTerm[0] += (velocity[3*tid + 0] - velocity[3*j + 0]) *\
+		// J - TID !!!!!!!!!!!
+		viscousTerm[0] += (velocity[3*j + 0] - velocity[3*tid + 0]) *\
 						centerPart * mViscosityScalar * rhoiInv;
-		viscousTerm[1] += (velocity[3*tid + 1] - velocity[3*j + 1]) *\
+		viscousTerm[1] += (velocity[3*j + 1] - velocity[3*tid + 1]) *\
 						centerPart * mViscosityScalar * rhoiInv;
-		viscousTerm[2] += (velocity[3*tid + 2] - velocity[3*j + 2]) *\
+		viscousTerm[2] += (velocity[3*j + 2] - velocity[3*tid + 2]) *\
 						centerPart * mViscosityScalar * rhoiInv;
 
 		// Importante...
@@ -769,7 +775,7 @@ __global__ void integrate_CUDA(float* position, float* velocity, float* accelera
 	invDist = invDist * invDist * invDist;  // dist^-3
 
 	// Updateo la gravedad:
-	// acceleration += gravityTerm;
+	// acceleration += gravityTerm;  -> Escribo mal a proposito, just to check (es +=)
 	acceleration[3*tid + 0] += -grav_cte * mass_centre * (rMinusRjScaled[0] * invDist);
 	acceleration[3*tid + 1] += -grav_cte * mass_centre * (rMinusRjScaled[1] * invDist);
 	acceleration[3*tid + 2] += -grav_cte * mass_centre * (rMinusRjScaled[2] * invDist);

@@ -30,7 +30,7 @@
 #include "cuda_utils.h" // Include the header for CUDA wrapper functions
 
 #ifndef M
-#define M 16
+#define M 32
 #endif
 #define K 8
 
@@ -74,10 +74,10 @@ SPH::SPH()
    totalSteps = (int)round(time_simu/mTimeStep);
 
    // physics
-   mRho0 = 100.0f;  // Check qué debería ser para el H_1 + He_2 pristino...
-   mStiffness = 0.1f;  // idk
+   mRho0 = 1e+2f;  // Check qué debería ser para el H_1 + He_2 pristino...
+   mStiffness = 1e-1f;  // idk
    mGravity = vec3(0.0f, 0.0f, 0.0f);
-   mViscosityScalar = 1.00f;  // 1e+1~2 == nice disk formation (!!!)
+   mViscosityScalar = 1e+1f;  // 1e+1~2 == nice disk formation (!!!)
    mDamping = 0.001f;  // Deberíamos "tirar" las que se escapen (En vez de checkear boundaries...)
    // Deberíamos definir acá la const de grav, el softening, la masa central y su pos?
    mGravConstant = 4.3009e-3f;  // En pc (km/s)^2 / M_sun
