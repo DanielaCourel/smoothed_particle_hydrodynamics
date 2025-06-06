@@ -30,7 +30,7 @@
 #include "cuda_utils.h" // Include the header for CUDA wrapper functions
 
 #ifndef M
-#define M 64
+#define M 16
 #endif
 #define K 8
 
@@ -62,7 +62,7 @@ SPH::SPH()
    mParticleCount = M * 1024;
    mGridCellsX = 24;  // OG 32...; Try 24 or whatever
    mGridCellsY = 24;
-   mGridCellsZ = 24	;
+   mGridCellsZ = 24;
    mGridCellCount = mGridCellsX * mGridCellsY * mGridCellsZ;
    mCellSize = 2.0f * h;
    mMaxX = mCellSize * mGridCellsX;
@@ -189,8 +189,8 @@ void SPH::run()
          outfile2 << stepCount << ", " << mAngularMomentumTotal.length() << std::endl;
          outfile3 << stepCount << ", " << timeVoxelize << ", " << timeFindNeighbors << ", " << timeComputeDensity << ", " << timeComputePressure << ", " << timeComputeAcceleration << ", " << timeIntegrate << std::endl;
          */
-         
          stepCount++;
+         //if (stepCount > 1) break;
       }
    }
 

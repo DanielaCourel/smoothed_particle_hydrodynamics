@@ -182,18 +182,20 @@ __global__ void voxelize_CUDA(float* position, int* global_index)
 	if (tid >= cant_particles) return;
 
 	// Ojo, tengo que contar el tamaño de las celdas! (como en la simu):
-	// float cell_size = 2.0f * h_krnl;
-	float len_box = side_grid * (2.f * h_krnl);	
+	float cell_size = 2.0f * h_krnl;
+	//float len_box = side_grid * (2.f * h_krnl);	
 
 	// 1st, compute the grid_index of this cell:
-	int idx_x = floor(position[3*tid + 0]/len_box);
-	int idx_y = floor(position[3*tid + 1]/len_box);
-	int idx_z = floor(position[3*tid + 2]/len_box);
+	int idx_x = floor(position[3*tid + 0]/cell_size);
+	int idx_y = floor(position[3*tid + 1]/cell_size);
+	int idx_z = floor(position[3*tid + 2]/cell_size);
 
 	// Ojo convencion de ejes, y es el vertical...
 	int cell_index = idx_x + side_grid * idx_y + side_grid * side_grid * idx_z;
 
 	global_index[tid] = cell_index;
+
+	//printf("Thread %d: x_i = %.3f; idx_x = %d; lim_cell_0 = %.3f\n", tid, position[3*tid+0], idx_x, 2.f*h_krnl);
 }
 
 
@@ -213,12 +215,13 @@ __global__ void neighbors_voxel_CUDA(float* position, float* mass, float* densit
 	int count_neighb = 0;
 	int ieth_index, jeth_index;
 	density[tid] = 0.f;
+	ieth_index = global_index[tid];
 
 	// OJO: Para la busqueda de vecinos, no quiero que toque potencialmente a todas las
 	// particulas del sistema, así que 1ro cuento cuántas hay en su misma celda, y barro 
 	// sólo esas!
 	int shared_cell = 0;
-	const int max_neighb = 512;  // Polemiquisimo...
+	const int max_neighb = 512*4;  // Polemiquisimo...
 	int list_neighb_idx[max_neighb];  // Polemiquisimo...
 	for (int j=0; j < cant_particles; j++)
 	{
@@ -228,13 +231,11 @@ __global__ void neighbors_voxel_CUDA(float* position, float* mass, float* densit
 			list_neighb_idx[shared_cell] = j;  // Populo y sigo...
 			shared_cell++;
 		}
+		//else {printf("Thread %d: dif cell = %d; current %d\n", tid, j, shared_cell);}
 
 		if (shared_cell == max_neighb) break;
 	}
 
-	printf("Thread %d: same cell = %d\n", tid, shared_cell);
-
-	ieth_index = global_index[tid];
 	// Main loop - Cada loop toca solo la parte del array con los index prev calculated,
 	// haciéndose cargo de 1 partícula...; Quiero barrer la lista de indexes creada (!)
 	int j;
@@ -242,14 +243,17 @@ __global__ void neighbors_voxel_CUDA(float* position, float* mass, float* densit
 	{
 		j = list_neighb_idx[j_this];  // Por cosntruccion, (ieth_index == jeth_index)
 		// j ahora es el indice GLOBAL
+		// -> Que j =/= tid!!!
+		if (j == tid) continue;
 		
 		rMinusRjScaled[0] = (position[3*tid + 0] - position[3*j + 0]) * scale;
 		rMinusRjScaled[1] = (position[3*tid + 1] - position[3*j + 1]) * scale;
 		rMinusRjScaled[2] = (position[3*tid + 2] - position[3*j + 2]) * scale;
 
+		// -> Sin softening!
 		distance_ij3 = rMinusRjScaled[0] * rMinusRjScaled[0] +\
 						rMinusRjScaled[1] * rMinusRjScaled[1] +\
-						rMinusRjScaled[2] * rMinusRjScaled[2] + softening;  // This is SQUARED
+						rMinusRjScaled[2] * rMinusRjScaled[2];  // This is SQUARED
 
 		// From this, I can (branchless-ly) compute hydro properties (!)
 		// Density:
@@ -261,10 +265,19 @@ __global__ void neighbors_voxel_CUDA(float* position, float* mass, float* densit
 
 		count_neighb += 1 * (distance_ij3 < h_krnl2);  // 0. if (d^2 >= h^2)
 
-		if (count_neighb > 32) break;
-	}
+		/*
+		if (threadIdx.x == 0)
+		{
+			//printf("Thread %d: idx_x,i = %d; idx_x,j = %d\n", tid, ieth_index, global_index[j]);
+			printf("Thread %d: distance_ij = %.3f; h^2 = %.3f\n", tid, distance_ij3, h_krnl2);
+			printf("Thread %d: count_neighb = %d\n", tid, count_neighb);
+		}
+		*/
 
-	printf("Thread %d: neighb found = %d\n", tid, count_neighb);
+		if (count_neighb > 32) break;
+
+		//if (distance_ij3 < h_krnl2) {printf("Thread %d: neighb found = %d\n", tid, count_neighb);}
+	}
 
 }
 
@@ -293,7 +306,7 @@ __global__ void hydro_voxel_CUDA(float* position, float* velocity, float* accele
 	// particulas del sistema, así que 1ro cuento cuántas hay en su misma celda, y barro 
 	// sólo esas!
 	int shared_cell = 0;
-	const int max_neighb = 512;  // Polemiquisimo...
+	const int max_neighb = 512*4;  // Polemiquisimo...
 	int list_neighb_idx[max_neighb];  // Polemiquisimo...
 	for (int j=0; j < cant_particles; j++)
 	{
@@ -325,14 +338,17 @@ __global__ void hydro_voxel_CUDA(float* position, float* velocity, float* accele
 	{
 		j = list_neighb_idx[j_this];  // Por construccion, (ieth_index == jeth_index)
 		// j ahora es el indice GLOBAL
-
+		// j =/= tid!!!
+		if (j == tid) continue;
+		
 		rMinusRjScaled[0] = (position[3*tid + 0] - position[3*j + 0]) * scale;
 		rMinusRjScaled[1] = (position[3*tid + 1] - position[3*j + 1]) * scale;
 		rMinusRjScaled[2] = (position[3*tid + 2] - position[3*j + 2]) * scale;
 
+		// -> Sin softening!
 		distance_ij3 = rMinusRjScaled[0] * rMinusRjScaled[0] +\
 						rMinusRjScaled[1] * rMinusRjScaled[1] +\
-						rMinusRjScaled[2] * rMinusRjScaled[2] + softening;  // This is SQUARED
+						rMinusRjScaled[2] * rMinusRjScaled[2];  // This is SQUARED
 
 		distance = sqrtf(distance_ij3);  // This is the true d_ij
 		invDist = rsqrtf(distance_ij3);  // quick x^(-1/2)
@@ -745,8 +761,9 @@ __global__ void integrate_CUDA(float* position, float* velocity, float* accelera
 	rMinusRjScaled[1] = (position[3*tid + 1] - y_centre) * scale;
 	rMinusRjScaled[2] = (position[3*tid + 2] - z_centre) * scale;
 
+	// Softening va squared!
 	distance_ij3 = rMinusRjScaled[0] * rMinusRjScaled[0] + rMinusRjScaled[1] * rMinusRjScaled[1] +\
-				rMinusRjScaled[2] * rMinusRjScaled[2] + softening;
+				rMinusRjScaled[2] * rMinusRjScaled[2] + (softening * softening);
 
 	invDist = rsqrtf(distance_ij3);  // quick x^(-1/2)
 	invDist = invDist * invDist * invDist;  // dist^-3
@@ -785,17 +802,28 @@ __global__ void integrate_CUDA(float* position, float* velocity, float* accelera
 	rMinusRjScaled[1] = (position[3*tid + 1] - y_centre) * scale;
 	rMinusRjScaled[2] = (position[3*tid + 2] - z_centre) * scale;
 
+	// Idem, soft^2...
 	distance_ij3 = rMinusRjScaled[0] * rMinusRjScaled[0] + rMinusRjScaled[1] * rMinusRjScaled[1] +\
-				rMinusRjScaled[2] * rMinusRjScaled[2] + softening;
+				rMinusRjScaled[2] * rMinusRjScaled[2] + (softening * softening);
 
 	invDist = rsqrtf(distance_ij3);  // quick x^(-1/2)
 	invDist = invDist * invDist * invDist;  // dist^-3
 
-	// Updateo la gravedad:
-	// acceleration += gravityTerm;
-	acceleration[3*tid + 0] += -grav_cte * mass_centre * (rMinusRjScaled[0] * invDist);
-	acceleration[3*tid + 1] += -grav_cte * mass_centre * (rMinusRjScaled[1] * invDist);
-	acceleration[3*tid + 2] += -grav_cte * mass_centre * (rMinusRjScaled[2] * invDist);
+	// Updateo la gravedad (de 0!):
+	acceleration[3*tid + 0] = -grav_cte * mass_centre * (rMinusRjScaled[0] * invDist);
+	acceleration[3*tid + 1] = -grav_cte * mass_centre * (rMinusRjScaled[1] * invDist);
+	acceleration[3*tid + 2] = -grav_cte * mass_centre * (rMinusRjScaled[2] * invDist);
+
+	
+	// OJO! Me falto check for CFL condition:
+	dot = (acceleration[3*tid +0] * acceleration[3*tid +0]) + (acceleration[3*tid +1] * acceleration[3*tid +1]) +\
+		(acceleration[3*tid +2] * acceleration[3*tid +2]);
+
+	// Lo meto a dedo... (recall branchles...)
+	acceleration[3*tid +0] *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
+	acceleration[3*tid +1] *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
+	acceleration[3*tid +2] *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
+
 
 	// Integro todo! LF-KDK: Only gravity
 	velocity[3*tid + 0] += acceleration[3*tid + 0] * delta_step;
@@ -1000,10 +1028,6 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
     CUDA_CHECK(cudaMemcpy(h_acceleration, device_acc, 3 * N * sizeof(float), cudaMemcpyDeviceToHost));
 	CUDA_CHECK(cudaMemcpy(h_mass, device_mass, N * sizeof(float), cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaMemcpy(h_density, device_dens, N * sizeof(float), cudaMemcpyDeviceToHost));
-
-	// Me está dando bola la parte hydro?
-	//printf("Density 1st particle:\n");
-    //printf("Particle %d rho: %.2f\n", 0, h_density[0]);
 
     // Free device memory
     // It's crucial to free allocated GPU memory to prevent memory leaks.
