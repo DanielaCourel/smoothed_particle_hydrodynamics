@@ -65,23 +65,56 @@ NEW: Como el findNeighbors() es muy hincha bolas, y quiero mergear todas las fun
 // no estoy encontrando casi ningún vecino con el actual approach. Luego, el kernel
 // se come la posición de la partícula i-ésima y barre de a muchas j-ésimas en simultáneo.
 // Es muchísimo más parecido al cómputo de la dist al BH i.e., no shenanigans block-wise (!)
-__global__ void neighbors_chunked_CUDA(float* position, float* mass, float* density,
-									float x_i, float y_i, float z_i,
-									float density_i, int cant_neighb)
+__global__ void neighbors_chunked_CUDA(
+	float* position, float* mass, float* density,
+	float x_i, float y_i, float z_i,
+	float* density_i, int* cant_neighb)
 {
-	// Ahora position es de tamaño del bloque, ojo!
-	// Thread ID - local al bloque!
-	int tid = threadIdx.x;
+	// Thread ID - global!
+	int tid = blockIdx.x * blockDim.x + threadIdx.x;
+	if (tid >= cant_particles) return;
+
+	// Within a block, min(tid) = 0; max(tid) = dim(block)
+	int dim_block = blockDim.x;
+	// Thread index within the block
+    int localThreadId = threadIdx.x;
+
+	// Only 1 big extern shared:
+    extern __shared__ char shared_buffer[];
+
+	// Offsets: Calculate the size of each component in bytes:
+    size_t vector_bytes = 3 * dim_block * sizeof(float);
+    size_t scalar_bytes = dim_block * sizeof(float);
+
+	// Calculate start addresses for each array within the buffer
+    // The first array starts at the beginning
+    char* current_ptr = shared_buffer;
+    float* s_localPositions = (float*)current_ptr;
+    current_ptr += vector_bytes; // Advance pointer past positions
+    float* s_localMasses = (float*)current_ptr;
+    current_ptr += scalar_bytes; // Advance pointer past masses
+    float* s_localDensities = (float*)current_ptr;
+
+	s_localPositions[3*localThreadId + 0] = position[3*tid + 0];
+	s_localPositions[3*localThreadId + 1] = position[3*tid + 1];
+	s_localPositions[3*localThreadId + 2] = position[3*tid + 2];
+
+	s_localMasses[localThreadId] = mass[tid];
+	s_localDensities[localThreadId] = 0.f;
+
+    __syncthreads(); // Ensure all shared memory loads are complete before any thread uses them
+
+	// TIENE que haber un if acá arriba de todo para que no se sigan ejecutando bloques de más:
+	if (*cant_neighb > 32) return;
 
 	// vars def thread-wise.
 	float distance_ij3, rightPart, w;
-	float rMinusRjScaled[3];
-	float local_density = 0.f;
+	float rMinusRjScaled[3];	
 
 	// Main loop - Cada hilo se encarga de 1 partícula (chunked):
-	rMinusRjScaled[0] = (position[3*tid + 0] - x_i) * scale;
-	rMinusRjScaled[1] = (position[3*tid + 1] - y_i) * scale;
-	rMinusRjScaled[2] = (position[3*tid + 2] - z_i) * scale;
+	rMinusRjScaled[0] = (s_localPositions[3*localThreadId + 0] - x_i) * scale;
+	rMinusRjScaled[1] = (s_localPositions[3*localThreadId + 1] - y_i) * scale;
+	rMinusRjScaled[2] = (s_localPositions[3*localThreadId + 2] - z_i) * scale;
 
 	distance_ij3 = rMinusRjScaled[0] * rMinusRjScaled[0] +\
 					rMinusRjScaled[1] * rMinusRjScaled[1] +\
@@ -93,15 +126,11 @@ __global__ void neighbors_chunked_CUDA(float* position, float* mass, float* dens
 	rightPart = rightPart * rightPart * rightPart;
 	w = mKernel1Scaled * rightPart * (distance_ij3 < h_krnl2);  // true => 1, false => 0 (!)
 	// apply weighted neighbor mass to our density
+	s_localDensities[localThreadId] += (s_localMasses[localThreadId] * w);  // 0. if (d^2 >= h^2)
+	// Atomically add each density to the total sum to the global variable:
+    atomicAdd(density_i, s_localDensities[localThreadId]);
 
 	// Ahora si uso warp-wise functions!!!
-
-	// Perform a parallel reduction within the warp using __shfl_down_sync
-    // This efficiently sums values across the warp; warp size = 32 (sup, pls)
-    // The mask `0xFFFFFFFF` synchronizes all threads in the warp.
-    for (int offset = 32 / 2; offset > 0; offset /= 2) {
-        local_density += __shfl_down_sync(0xFFFFFFFF, w, offset);
-    }
 
 	// Perform a warp-wide ballot to see which threads meet the condition
 	// (true (non-zero) or false (zero) for each thread).
@@ -121,12 +150,9 @@ __global__ void neighbors_chunked_CUDA(float* position, float* mass, float* dens
 	// =/= a LocalID == 0 !!!
 	if (tid % 32 == 0)
 	{
-		// Atomically add the warp's total sum to the global variable
-        atomicAdd(&density_i, local_density);
-
 		// Atomically add to a global or shared counter for this shared target particle
 		// This ensures the sum for the warp's contributions is added only once
-		atomicAdd(&cant_neighb, num_threads_meeting_condition);
+		atomicAdd(cant_neighb, num_threads_meeting_condition);
 	}
 
 	// It's crucial to synchronize threads *after* the atomicAdd if *all* threads
@@ -660,25 +686,15 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
 		float density_i = device_dens[i];
 		int cant_neighb = 0;
 
-		for (int chunk = 0; chunk < blocksPerGrid; chunk++)
-		{
-			int particle_offset = chunk * chunk_size;
-
-			// Launcheá todos los bloques que quieras, pero avisame cuánto encontró c/u:
-			// (offset segun chunk actual, no hace falta que le de memoria (threads indeptes...))
-			neighbors_chunked_CUDA<<<blocksPerGrid, threadsPerBlock>>>(
-									device_pos[3*particle_offset],
-									device_mass[particle_offset],
-									device_dens[particle_offset],
-									x_i, y_i, z_i, density_i, cant_neighb);
-									// Estos ults son atomicos
-			
-			// Hacé que todos se pongan al tanto de lo que pasa globalmente
-			CUDA_CHECK(cudaDeviceSynchronize());
-
-			// Cortá
-			if (cant_neighb > 32) break;
-		}
+		// Quiero que cada bloque toque su propia memoria -> Vuelta al buffer
+		neighbors_chunked_CUDA<<<blocksPerGrid, threadsPerBlock, total_shared_mem_bytes_neighbors>>>(
+								device_pos, device_mass, device_dens,
+								x_i, y_i, z_i,
+								&density_i, &cant_neighb);
+								// Estos ults son atomicos
+		
+		// Hacé que todos se pongan al tanto de lo que pasa globalmente
+		CUDA_CHECK(cudaDeviceSynchronize());
 
 		// Updateo
 		device_dens[i] = density_i;
@@ -686,8 +702,7 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
 		// Como cortaste, seguí a la siguiente partícula (!)
 		if (cant_neighb > 32) continue;
 
-		}
-	}	
+	};
 
 	// Synchronize the device to ensure all kernel operations are complete
     // cudaDeviceSynchronize blocks the CPU until all GPU tasks are finished.
