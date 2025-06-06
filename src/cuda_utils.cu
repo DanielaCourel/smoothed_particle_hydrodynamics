@@ -43,6 +43,9 @@ __constant__ float mRho0;
 __constant__ float mViscosityScalar;
 __constant__ float mStiffness;
 
+// New cte, size of the grid (!):
+__constant__ int side_grid;
+
 // Estas variables las voy a tener que llamar del host (en cada step pls), así que son args del wrapper!!! (=/= kernel (!))
 
 /*
@@ -61,10 +64,15 @@ NEW: Como el findNeighbors() es muy hincha bolas, y quiero mergear todas las fun
 // NEW: separo la accel por vecinos de la grav central? Quiero aprovechar al máximo
 // los blocks como working-units, y usar ~intrinsics de warps!!!
 
+/*
+
 // Re-do: launcheo muchos blocks buscando vecinos de UNA partícula a la vez,
 // no estoy encontrando casi ningún vecino con el actual approach. Luego, el kernel
 // se come la posición de la partícula i-ésima y barre de a muchas j-ésimas en simultáneo.
 // Es muchísimo más parecido al cómputo de la dist al BH i.e., no shenanigans block-wise (!)
+
+MUY lenta -> Volvamos a la voxelize() strategy but implemented in CUDA (homemade)
+
 __global__ void neighbors_chunked_CUDA(
 	float* position, float* mass, float* density,
 	float x_i, float y_i, float z_i,
@@ -162,7 +170,213 @@ __global__ void neighbors_chunked_CUDA(
 	__syncthreads(); // Synchronize all threads in the block to see the updated count
 
 }
-// ---------------------------------------------------
+
+*/
+
+// Voxelize, and then nighbors + dens & hydro...
+__global__ void voxelize_CUDA(float* position, int* global_index)
+{
+	// Thread ID - global!
+	int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+	if (tid >= cant_particles) return;
+
+	// 1st, compute the grid_index of this cell:
+	int idx_x = floor(position[3*tid + 0]/side_grid);
+	int idx_y = floor(position[3*tid + 1]/side_grid);
+	int idx_z = floor(position[3*tid + 2]/side_grid);
+
+	// Ojo convencion de ejes, y es el vertical...
+	int cell_index = idx_x + side_grid * idx_y + side_grid * side_grid * idx_z;
+
+	global_index[tid] = cell_index;
+}
+
+
+// Neigh + densities using the voxelization:
+__global__ void neighbors_voxel_CUDA(float* position, float* mass, float* density,
+								int* global_index)
+{
+	// Thread ID - global!
+	int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+	if (tid >= cant_particles) return;
+
+	// Within a block, min(tid) = 0; max(tid) = dim(block)
+	int dim_block = blockDim.x;
+
+	// vars def thread-wise.
+	float distance_ij3, rightPart, w;
+	float rMinusRjScaled[3];
+	// Init
+	int count_neighb = 0;
+	int ieth_index, jeth_index;
+	density[tid] = 0.f;
+
+	// OJO: Para la busqueda de vecinos, no quiero que toque potencialmente a todas las
+	// particulas del sistema, así que 1ro cuento cuántas hay en su misma celda, y barro 
+	// sólo esas!
+	int shared_cell = 0;
+	int max_neighb = 100;  // Polemiquisimo...
+	int list_neighb_idx[max_neighb];  // Polemiquisimo...
+	for (int j=0; j < cant_particles; j++)
+	{
+		jeth_index = global_index[j];
+		if (ieth_index == jeth_index)
+		{
+			list_neighb_idx[shared_cell] = j;  // Populo y sigo...
+			shared_cell++;
+		}
+
+		if (shared_cell == max_neighb) break;
+	}
+
+	ieth_index = global_index[tid];
+	// Main loop - Cada loop toca solo la parte del array con los index prev calculated,
+	// haciéndose cargo de 1 partícula...; Quiero barrer la lista de indexes creada (!)
+	for (int j_this = 0; j < shared_cell; j_this++)
+	{
+		j = list_neighb_idx[j_this];  // Por cosntruccion, (ieth_index == jeth_index)
+		// j ahora es el indice GLOBAL
+		
+		rMinusRjScaled[0] = (position[3*tid + 0] - position[3*j + 0]) * scale;
+		rMinusRjScaled[1] = (position[3*tid + 1] - position[3*j + 1]) * scale;
+		rMinusRjScaled[2] = (position[3*tid + 2] - position[3*j + 2]) * scale;
+
+		distance_ij3 = rMinusRjScaled[0] * rMinusRjScaled[0] +\
+						rMinusRjScaled[1] * rMinusRjScaled[1] +\
+						rMinusRjScaled[2] * rMinusRjScaled[2] + softening;  // This is SQUARED
+
+		// From this, I can (branchless-ly) compute hydro properties (!)
+		// Density:
+		rightPart = h_krnl2 - distance_ij3;
+		rightPart = rightPart * rightPart * rightPart;
+		w = mKernel1Scaled * rightPart * (distance_ij3 < h_krnl2);  // true => 1, false => 0 (!)
+		// apply weighted neighbor mass to our density
+		density[tid] += (mass[tid] * w);  // 0. if (d^2 >= h^2)
+
+		count_neighb += 1 * (distance_ij3 < h_krnl2);  // 0. if (d^2 >= h^2)
+
+		if (count_neighb > 32) break;
+	}
+
+}
+
+
+// Hydro using the voxelization (re-computo distancia, no hay con qué darle por ahora...)
+__global__ void hydro_voxel_CUDA(float* position, float* velocity, float* acceleration,
+							float* mass, float* density, int* global_index)
+{
+	// Thread ID - global!
+	int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+	if (tid >= cant_particles) return;
+
+	// vars def thread-wise.
+	float distance_ij3, distance, invDist;
+	float pi, rhoiInv, rhoiInv2, piDivRhoi2;
+	float centerPart, mj, pj, rhojInv, rhojInv2;
+	float rMinusRjScaled[3];
+
+	// Init
+	int count_neighb = 0;
+	int ieth_index, jeth_index;
+	ieth_index = global_index[tid];
+
+	// OJO: Para la busqueda de vecinos, no quiero que toque potencialmente a todas las
+	// particulas del sistema, así que 1ro cuento cuántas hay en su misma celda, y barro 
+	// sólo esas!
+	int shared_cell = 0;
+	int max_neighb = 100;  // Polemiquisimo...
+	int list_neighb_idx[max_neighb];  // Polemiquisimo...
+	for (int j=0; j < cant_particles; j++)
+	{
+		jeth_index = global_index[j];
+		if (ieth_index == jeth_index)
+		{
+			list_neighb_idx[shared_cell] = j;  // Populo y sigo...
+			shared_cell++;
+		}
+
+		if (shared_cell == max_neighb) break;
+	}
+
+	pi = (density[tid] - mRho0) * mStiffness;  // One-liner...
+	rhoiInv = ((pi > 0.0f) ? (1.0f / pi) : 1.0f);  // Better?
+	rhoiInv2 = rhoiInv * rhoiInv;
+	piDivRhoi2 = pi * rhoiInv2;
+
+	// Pressure gradient
+	float pressureGradient[3] = {0.0f, 0.0f, 0.0f};
+	float pressureGradientContribution[3];
+	// Viscous term
+	float viscousTerm[3] = {0.0f, 0.0f, 0.0f};
+
+	// Main loop - Cada loop toca solo la parte del array con los index prev calculated,
+	// haciéndose cargo de 1 partícula...; Quiero barrer la lista de indexes creada (!)
+	for (int j_this = 0; j < shared_cell; j_this++)
+	{
+		j = list_neighb_idx[j_this];  // Por construccion, (ieth_index == jeth_index)
+		// j ahora es el indice GLOBAL
+
+		rMinusRjScaled[0] = (position[3*tid + 0] - position[3*j + 0]) * scale;
+		rMinusRjScaled[1] = (position[3*tid + 1] - position[3*j + 1]) * scale;
+		rMinusRjScaled[2] = (position[3*tid + 2] - position[3*j + 2]) * scale;
+
+		distance_ij3 = rMinusRjScaled[0] * rMinusRjScaled[0] +\
+						rMinusRjScaled[1] * rMinusRjScaled[1] +\
+						rMinusRjScaled[2] * rMinusRjScaled[2] + softening;  // This is SQUARED
+
+		distance = sqrtf(distance_ij3);  // This is the true d_ij
+		invDist = rsqrtf(distance_ij3);  // quick x^(-1/2)
+
+		// Pressure gradient:
+		mj = mass[j];
+		pj = (density[j] - mRho0) * mStiffness;
+		rhojInv = ((density[j] > 0.0f) ? (1.0f / density[j]) : 1.0f);
+		rhojInv2 = rhojInv * rhojInv;
+
+		centerPart = (h_krnl - distance) * (distance_ij3 < h_krnl2);  // true => 1, false => 0 (!)
+		centerPart *= centerPart;  // 0 if d >= h
+		centerPart *= mj * piDivRhoi2 * (pj * rhojInv2);  // 0 if d >= h
+
+		pressureGradientContribution[0] = mKernel2Scaled * rMinusRjScaled[0] * invDist;
+		pressureGradientContribution[1] = mKernel2Scaled * rMinusRjScaled[1] * invDist;
+		pressureGradientContribution[2] = mKernel2Scaled * rMinusRjScaled[2] * invDist;
+
+		// add pressure gradient contribution to pressure gradient
+		pressureGradient[0] += pressureGradientContribution[0] * centerPart;  // 0 if d >= h
+		pressureGradient[1] += pressureGradientContribution[1] * centerPart;
+		pressureGradient[2] += pressureGradientContribution[2] * centerPart;
+
+		// Viscosity (Reuso variables):
+		centerPart = (h_krnl - distance) * (distance_ij3 < h_krnl2);  // true => 1, false => 0 (!)
+		centerPart *= rhojInv * mj * mKernel3Scaled;  // 0 if d >= h
+
+		// add contribution to viscous term (+0 if d >= h)
+		viscousTerm[0] += (velocity[3*tid + 0] - velocity[3*j + 0]) *\
+						centerPart * mViscosityScalar * rhoiInv;
+		viscousTerm[1] += (velocity[3*tid + 1] - velocity[3*j + 1]) *\
+						centerPart * mViscosityScalar * rhoiInv;
+		viscousTerm[2] += (velocity[3*tid + 2] - velocity[3*j + 2]) *\
+						centerPart * mViscosityScalar * rhoiInv;
+
+		// Importante...
+		count_neighb += 1 * (distance_ij3 < h_krnl2);  // 0. if (d^2 >= h^2)
+
+		if (count_neighb > 32) break;
+	}
+
+	// Finish parte hydro, aparte haremos la accel central desp...
+	// Every thread of the block writes in its own place the results from shared memory
+    // to global memory. (no need for sync!)
+	acceleration[3*tid + 0] = viscousTerm[0] - pressureGradient[0];
+	acceleration[3*tid + 1] = viscousTerm[1] - pressureGradient[1];
+	acceleration[3*tid + 2] = viscousTerm[2] - pressureGradient[2];
+
+}
+
+
 
 // So: 1st neigh + densities; 2nd hydro; 3rd grav + integ
 __global__ void neighbors_CUDA(float* position, float* mass, float* density)
@@ -662,19 +876,17 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
 	size_t vector_bytes = 3 * threadsPerBlock * sizeof(float);
 	size_t scalar_bytes = threadsPerBlock * sizeof(float);
 
+	/*
+
 	// Calculate total required shared memory bytes (including padding if applied)
 	// pos, dens, mass, neighb
 	size_t total_shared_mem_bytes_neighbors = vector_bytes + scalar_bytes + scalar_bytes + scalar_bytes;
-	// pos, dens, mass (neighb_chunked)
-	//size_t total_shared_mem_bytes_neighbors = vector_bytes + scalar_bytes + scalar_bytes;
 	// pos, vel, dens, mass, neighb
 	size_t total_shared_mem_bytes_hydro = vector_bytes + vector_bytes + scalar_bytes + scalar_bytes + scalar_bytes;
 	// integrate no usa buffers (!)
-	
-	// Launch the kernel(s)
-	// 1st: neighbors + density!
-	neighbors_CUDA<<<blocksPerGrid, threadsPerBlock, total_shared_mem_bytes_neighbors>>>(device_pos, device_mass, device_dens);
 
+	*/
+	// --------------------------------------------------------
 	/*
 
 	Ahora si encuentra a los vecinos, pero se tarda x100 (!!!)
@@ -729,19 +941,42 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
 
 	*/
 
+	// New, ft. voxelize() -> No necesito allcoar memoria (no uso buffers!). Pero si el global index
+    int* d_global_index;
+    CUDA_CHECK(cudaMalloc(&d_global_index, sizeof(int)));
+	
+	// Launch the kernel(s)
+	// 1st: voxelize()
+	voxelize_CUDA<<<blocksPerGrid, threadsPerBlock>>>(device_pos, d_global_index);
 	// Synchronize the device to ensure all kernel operations are complete
     // cudaDeviceSynchronize blocks the CPU until all GPU tasks are finished.
     CUDA_CHECK(cudaDeviceSynchronize());
 
+	// neighbors + density!
+	neighbors_voxel_CUDA<<<blocksPerGrid, threadsPerBlock>>>(device_pos, device_mass, device_dens, d_global_index);
+	// Synchronize the device to ensure all kernel operations are complete
+    // cudaDeviceSynchronize blocks the CPU until all GPU tasks are finished.
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+	// hydro!
+	hydro_voxel_CUDA<<<blocksPerGrid, threadsPerBlock>>>(device_pos, device_vel, device_acc,
+														device_mass, device_dens, d_global_index);
+	// Synchronize the device to ensure all kernel operations are complete
+    // cudaDeviceSynchronize blocks the CPU until all GPU tasks are finished.
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+	/*
 	// 2nd: hydro!
 	hydro_CUDA<<<blocksPerGrid, threadsPerBlock, total_shared_mem_bytes_hydro>>>(device_pos, device_vel, device_acc,
 														device_mass, device_dens);
+	
 
 	// Synchronize the device to ensure all kernel operations are complete
     // cudaDeviceSynchronize blocks the CPU until all GPU tasks are finished.
     CUDA_CHECK(cudaDeviceSynchronize());
+	*/														
 
-	// 2nd: finish acc + integration
+	// Finish acc + integration
 	integrate_CUDA<<<blocksPerGrid, threadsPerBlock>>>(device_pos, device_vel, device_acc);												
     
     // Synchronize the device to ensure all kernel operations are complete
@@ -758,8 +993,8 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
     CUDA_CHECK(cudaMemcpy(h_density, device_dens, N * sizeof(float), cudaMemcpyDeviceToHost));
 
 	// Me está dando bola la parte hydro?
-	printf("Density 1st particle:\n");
-    printf("Particle %d rho: %.2f\n", 0, h_density[0]);
+	//printf("Density 1st particle:\n");
+    //printf("Particle %d rho: %.2f\n", 0, h_density[0]);
 
     // Free device memory
     // It's crucial to free allocated GPU memory to prevent memory leaks.
@@ -772,6 +1007,8 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
 	// Free the newly created for the inner loop:
 	//CUDA_CHECK(cudaFree(d_current_density_contribution_ptr));
 	//CUDA_CHECK(cudaFree(d_current_neighb_count_ptr));
+
+	CUDA_CHECK(cudaFree(d_global_index));
 
 }
 
