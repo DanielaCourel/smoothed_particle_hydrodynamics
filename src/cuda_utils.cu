@@ -664,18 +664,21 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
 
 	// Calculate total required shared memory bytes (including padding if applied)
 	// pos, dens, mass, neighb
-	//size_t total_shared_mem_bytes_neighbors = vector_bytes + scalar_bytes + scalar_bytes + scalar_bytes;
+	size_t total_shared_mem_bytes_neighbors = vector_bytes + scalar_bytes + scalar_bytes + scalar_bytes;
 	// pos, dens, mass (neighb_chunked)
-	size_t total_shared_mem_bytes_neighbors = vector_bytes + scalar_bytes + scalar_bytes;
+	//size_t total_shared_mem_bytes_neighbors = vector_bytes + scalar_bytes + scalar_bytes;
 	// pos, vel, dens, mass, neighb
 	size_t total_shared_mem_bytes_hydro = vector_bytes + vector_bytes + scalar_bytes + scalar_bytes + scalar_bytes;
 	// integrate no usa buffers (!)
 	
 	// Launch the kernel(s)
 	// 1st: neighbors + density!
-	/*
 	neighbors_CUDA<<<blocksPerGrid, threadsPerBlock, total_shared_mem_bytes_neighbors>>>(device_pos, device_mass, device_dens);
-	*/
+
+	/*
+
+	Ahora si encuentra a los vecinos, pero se tarda x100 (!!!)
+
 	// Try loop (for each particle) -> iterá sobre chunks de particles, pero sincronizá y cortá entre medio:
 	// "chunk" == bloque!
 
@@ -689,9 +692,9 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
 
 	for (int i = 0; i < N; i++)
 	{
-		float x_i = device_pos[3*i + 0];
-		float y_i = device_pos[3*i + 1];
-		float z_i = device_pos[3*i + 2];
+		float x_i = h_position[3*i + 0];  // Much slower?
+		float y_i = h_position[3*i + 1];
+		float z_i = h_position[3*i + 2];
 
 		// Initialize the device-side accumulation variables for THIS particle 'i'
 		float density_i = 0.f;
@@ -700,10 +703,11 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
         CUDA_CHECK(cudaMemcpy(d_current_neighb_count_ptr, &cant_neighb, sizeof(int), cudaMemcpyHostToDevice));
 
 		// Quiero que cada bloque toque su propia memoria -> Vuelta al buffer
-		neighbors_cOptionally, uhunked_CUDA<<<blocksPerGrid, threadsPerBlock, total_shared_mem_bytes_neighbors>>>(
+		neighbors_chunked_CUDA<<<blocksPerGrid, threadsPerBlock, total_shared_mem_bytes_neighbors>>>(
 								device_pos, device_mass, device_dens,
 								x_i, y_i, z_i,
-								&density_i, &cant_neighb);
+								d_current_density_contribution_ptr,
+								d_current_neighb_count_ptr);
 								// Estos ults son atomicos
 		
 		// Hacé que todos se pongan al tanto de lo que pasa globalmente
@@ -716,12 +720,14 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
 		CUDA_CHECK(cudaMemcpy(&h_accumulated_neighb_count_i, d_current_neighb_count_ptr, sizeof(int), cudaMemcpyDeviceToHost));
 
 		// Update the device_dens array for particle 'i' immediately.
-        CUDA_CHECK(cudaMemcpy(&device_dens[i], &h_accumulated_density_i[i], sizeof(float), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(&device_dens[i], &h_accumulated_density_i, sizeof(float), cudaMemcpyHostToDevice));
 
 		// Check the exit condition based on accumulated neighbors
 		if (h_accumulated_neighb_count_i > 32) continue;  // Next particle
 
 	};
+
+	*/
 
 	// Synchronize the device to ensure all kernel operations are complete
     // cudaDeviceSynchronize blocks the CPU until all GPU tasks are finished.
@@ -764,8 +770,8 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
 	CUDA_CHECK(cudaFree(device_dens));
 
 	// Free the newly created for the inner loop:
-	CUDA_CHECK(cudaFree(d_current_density_contribution_ptr));
-	CUDA_CHECK(cudaFree(d_current_neighb_count_ptr));
+	//CUDA_CHECK(cudaFree(d_current_density_contribution_ptr));
+	//CUDA_CHECK(cudaFree(d_current_neighb_count_ptr));
 
 }
 
