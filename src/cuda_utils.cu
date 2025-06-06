@@ -61,6 +61,83 @@ NEW: Como el findNeighbors() es muy hincha bolas, y quiero mergear todas las fun
 // NEW: separo la accel por vecinos de la grav central? Quiero aprovechar al máximo
 // los blocks como working-units, y usar ~intrinsics de warps!!!
 
+// Re-do: launcheo muchos blocks buscando vecinos de UNA partícula a la vez,
+// no estoy encontrando casi ningún vecino con el actual approach. Luego, el kernel
+// se come la posición de la partícula i-ésima y barre de a muchas j-ésimas en simultáneo.
+// Es muchísimo más parecido al cómputo de la dist al BH i.e., no shenanigans block-wise (!)
+__global__ void neighbors_chunked_CUDA(float* position, float* mass, float* density,
+									float x_i, float y_i, float z_i,
+									float density_i, int cant_neighb)
+{
+	// Ahora position es de tamaño del bloque, ojo!
+	// Thread ID - local al bloque!
+	int tid = threadIdx.x;
+
+	// vars def thread-wise.
+	float distance_ij3, rightPart, w;
+	float rMinusRjScaled[3];
+	float local_density = 0.f;
+
+	// Main loop - Cada hilo se encarga de 1 partícula (chunked):
+	rMinusRjScaled[0] = (position[3*tid + 0] - x_i) * scale;
+	rMinusRjScaled[1] = (position[3*tid + 1] - y_i) * scale;
+	rMinusRjScaled[2] = (position[3*tid + 2] - z_i) * scale;
+
+	distance_ij3 = rMinusRjScaled[0] * rMinusRjScaled[0] +\
+					rMinusRjScaled[1] * rMinusRjScaled[1] +\
+					rMinusRjScaled[2] * rMinusRjScaled[2] + softening;  // This is SQUARED
+
+	// From this, I can (branchless-ly) compute hydro properties (!)
+	// Density:
+	rightPart = h_krnl2 - distance_ij3;
+	rightPart = rightPart * rightPart * rightPart;
+	w = mKernel1Scaled * rightPart * (distance_ij3 < h_krnl2);  // true => 1, false => 0 (!)
+	// apply weighted neighbor mass to our density
+
+	// Ahora si uso warp-wise functions!!!
+
+	// Perform a parallel reduction within the warp using __shfl_down_sync
+    // This efficiently sums values across the warp; warp size = 32 (sup, pls)
+    // The mask `0xFFFFFFFF` synchronizes all threads in the warp.
+    for (int offset = 32 / 2; offset > 0; offset /= 2) {
+        local_density += __shfl_down_sync(0xFFFFFFFF, w, offset);
+    }
+
+	// Perform a warp-wide ballot to see which threads meet the condition
+	// (true (non-zero) or false (zero) for each thread).
+	// The result 'condition_mask' is a 32-bit integer where bit 'i' is set
+	// if thread 'i' in the warp met the condition.
+
+	// Mask of active threads in the warp
+	unsigned int active_threads_mask = __activemask();
+	// Def the condition:
+	bool valid_neighbor = (distance_ij3 < h_krnl2);
+	// Ask them:
+	unsigned int condition_mask = __ballot_sync(active_threads_mask, valid_neighbor);
+	// __popc() to count how many threads in this warp met the condition:
+	int num_threads_meeting_condition = __popc(condition_mask);
+
+	// Only the warp leader count its private counter!
+	// =/= a LocalID == 0 !!!
+	if (tid % 32 == 0)
+	{
+		// Atomically add the warp's total sum to the global variable
+        atomicAdd(&density_i, local_density);
+
+		// Atomically add to a global or shared counter for this shared target particle
+		// This ensures the sum for the warp's contributions is added only once
+		atomicAdd(&cant_neighb, num_threads_meeting_condition);
+	}
+
+	// It's crucial to synchronize threads *after* the atomicAdd if *all* threads
+	// need to see the *updated* shared count before the next iteration of the loop.
+	// Without this, some threads might read an old value of s_shared_neighbor_count[LocalID]
+	// at the start of the next iteration, potentially missing the break condition.
+	__syncthreads(); // Synchronize all threads in the block to see the updated count
+
+}
+// ---------------------------------------------------
+
 // So: 1st neigh + densities; 2nd hydro; 3rd grav + integ
 __global__ void neighbors_CUDA(float* position, float* mass, float* density)
 {
@@ -125,8 +202,7 @@ __global__ void neighbors_CUDA(float* position, float* mass, float* density)
     __syncthreads(); // Ensure all shared memory loads are complete before any thread uses them
 
 	// vars def thread-wise.
-	float distance_ij3, distance, invDist;
-	float rightPart, w;
+	float distance_ij3, rightPart, w;
 	float rMinusRjScaled[3];	
 
 	// Main loop - block-wise (Ojo iters!)
@@ -145,8 +221,6 @@ __global__ void neighbors_CUDA(float* position, float* mass, float* density)
 		distance_ij3 = rMinusRjScaled[0] * rMinusRjScaled[0] +\
 						rMinusRjScaled[1] * rMinusRjScaled[1] +\
 						rMinusRjScaled[2] * rMinusRjScaled[2] + softening;  // This is SQUARED
-		distance = sqrtf(distance_ij3);  // This is the true d_ij
-		invDist = rsqrtf(distance_ij3);  // quick x^(-1/2)
 
 		// From this, I can (branchless-ly) compute hydro properties (!)
 		// Density:
@@ -283,7 +357,7 @@ __global__ void hydro_CUDA(float* position, float* velocity, float* acceleration
 
 	// vars def thread-wise.
 	float distance_ij3, distance, invDist;
-	float rightPart, w, pi, rhoiInv, rhoiInv2, piDivRhoi2;
+	float pi, rhoiInv, rhoiInv2, piDivRhoi2;
 	float centerPart, mj, pj, rhojInv, rhojInv2;
 	float rMinusRjScaled[3];
 
@@ -571,7 +645,49 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
 	
 	// Launch the kernel(s)
 	// 1st: neighbors + density!
+	/*
 	neighbors_CUDA<<<blocksPerGrid, threadsPerBlock, total_shared_mem_bytes_neighbors>>>(device_pos, device_mass, device_dens);
+	*/
+	// Try loop (for each particle) -> iterá sobre chunks de particles, pero sincronizá y cortá entre medio:
+	// "chunk" == bloque!
+	int chunk_size = threadsPerBlock;
+	for (int i = 0; i < N; i++)
+	{
+		float x_i = device_pos[3*i + 0];
+		float y_i = device_pos[3*i + 1];
+		float z_i = device_pos[3*i + 2];
+
+		float density_i = device_dens[i];
+		int cant_neighb = 0;
+
+		for (int chunk = 0; chunk < blocksPerGrid; chunk++)
+		{
+			int particle_offset = chunk * chunk_size;
+
+			// Launcheá todos los bloques que quieras, pero avisame cuánto encontró c/u:
+			// (offset segun chunk actual, no hace falta que le de memoria (threads indeptes...))
+			neighbors_chunked_CUDA<<<blocksPerGrid, threadsPerBlock>>>(
+									device_pos[3*particle_offset],
+									device_mass[particle_offset],
+									device_dens[particle_offset],
+									x_i, y_i, z_i, density_i, cant_neighb);
+									// Estos ults son atomicos
+			
+			// Hacé que todos se pongan al tanto de lo que pasa globalmente
+			CUDA_CHECK(cudaDeviceSynchronize());
+
+			// Cortá
+			if (cant_neighb > 32) break;
+		}
+
+		// Updateo
+		device_dens[i] = density_i;
+
+		// Como cortaste, seguí a la siguiente partícula (!)
+		if (cant_neighb > 32) continue;
+
+		}
+	}	
 
 	// Synchronize the device to ensure all kernel operations are complete
     // cudaDeviceSynchronize blocks the CPU until all GPU tasks are finished.
