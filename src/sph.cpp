@@ -273,7 +273,8 @@ void SPH::step()
          mParticleCount, mSimulationScale, mSoftening, mGravConstant,
          mCentralMass, mTimeStep, mCentralPos[0], mCentralPos[1], mCentralPos[2],
          mH, mH2, mHScaled9, mKernel1Scaled, mKernel2Scaled, mKernel3Scaled,
-         mRho0, mViscosityScalar, mStiffness);
+         mRho0, mViscosityScalar, mStiffness, mGridCellsX);
+   // Ojo con la escala del grideado... (cada celda mide 2*h (!))
 				
 	timeIntegrate = t.nsecsElapsed() / 1000000;
 	

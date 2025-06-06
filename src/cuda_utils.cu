@@ -181,10 +181,14 @@ __global__ void voxelize_CUDA(float* position, int* global_index)
 
 	if (tid >= cant_particles) return;
 
+	// Ojo, tengo que contar el tamaño de las celdas! (como en la simu):
+	// float cell_size = 2.0f * h_krnl;
+	float len_box = side_grid * (2.f * h_krnl);	
+
 	// 1st, compute the grid_index of this cell:
-	int idx_x = floor(position[3*tid + 0]/side_grid);
-	int idx_y = floor(position[3*tid + 1]/side_grid);
-	int idx_z = floor(position[3*tid + 2]/side_grid);
+	int idx_x = floor(position[3*tid + 0]/len_box);
+	int idx_y = floor(position[3*tid + 1]/len_box);
+	int idx_z = floor(position[3*tid + 2]/len_box);
 
 	// Ojo convencion de ejes, y es el vertical...
 	int cell_index = idx_x + side_grid * idx_y + side_grid * side_grid * idx_z;
@@ -202,9 +206,6 @@ __global__ void neighbors_voxel_CUDA(float* position, float* mass, float* densit
 
 	if (tid >= cant_particles) return;
 
-	// Within a block, min(tid) = 0; max(tid) = dim(block)
-	int dim_block = blockDim.x;
-
 	// vars def thread-wise.
 	float distance_ij3, rightPart, w;
 	float rMinusRjScaled[3];
@@ -217,7 +218,7 @@ __global__ void neighbors_voxel_CUDA(float* position, float* mass, float* densit
 	// particulas del sistema, así que 1ro cuento cuántas hay en su misma celda, y barro 
 	// sólo esas!
 	int shared_cell = 0;
-	int max_neighb = 100;  // Polemiquisimo...
+	const int max_neighb = 512;  // Polemiquisimo...
 	int list_neighb_idx[max_neighb];  // Polemiquisimo...
 	for (int j=0; j < cant_particles; j++)
 	{
@@ -231,10 +232,13 @@ __global__ void neighbors_voxel_CUDA(float* position, float* mass, float* densit
 		if (shared_cell == max_neighb) break;
 	}
 
+	printf("Thread %d: same cell = %d\n", tid, shared_cell);
+
 	ieth_index = global_index[tid];
 	// Main loop - Cada loop toca solo la parte del array con los index prev calculated,
 	// haciéndose cargo de 1 partícula...; Quiero barrer la lista de indexes creada (!)
-	for (int j_this = 0; j < shared_cell; j_this++)
+	int j;
+	for (int j_this = 0; j_this < shared_cell; j_this++)
 	{
 		j = list_neighb_idx[j_this];  // Por cosntruccion, (ieth_index == jeth_index)
 		// j ahora es el indice GLOBAL
@@ -259,6 +263,8 @@ __global__ void neighbors_voxel_CUDA(float* position, float* mass, float* densit
 
 		if (count_neighb > 32) break;
 	}
+
+	printf("Thread %d: neighb found = %d\n", tid, count_neighb);
 
 }
 
@@ -287,7 +293,7 @@ __global__ void hydro_voxel_CUDA(float* position, float* velocity, float* accele
 	// particulas del sistema, así que 1ro cuento cuántas hay en su misma celda, y barro 
 	// sólo esas!
 	int shared_cell = 0;
-	int max_neighb = 100;  // Polemiquisimo...
+	const int max_neighb = 512;  // Polemiquisimo...
 	int list_neighb_idx[max_neighb];  // Polemiquisimo...
 	for (int j=0; j < cant_particles; j++)
 	{
@@ -314,7 +320,8 @@ __global__ void hydro_voxel_CUDA(float* position, float* velocity, float* accele
 
 	// Main loop - Cada loop toca solo la parte del array con los index prev calculated,
 	// haciéndose cargo de 1 partícula...; Quiero barrer la lista de indexes creada (!)
-	for (int j_this = 0; j < shared_cell; j_this++)
+	int j;
+	for (int j_this = 0; j_this < shared_cell; j_this++)
 	{
 		j = list_neighb_idx[j_this];  // Por construccion, (ieth_index == jeth_index)
 		// j ahora es el indice GLOBAL
@@ -807,7 +814,7 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
 				float h_x_centre, float h_y_centre, float h_z_centre,
 				float h_h_krnl, float h_h_krnl2, float h_mHScaled9, float h_mKernel1Scaled,
 				float h_mKernel2Scaled, float h_mKernel3Scaled, float h_mRho0,
-				float h_mViscosityScalar, float h_mStiffness)
+				float h_mViscosityScalar, float h_mStiffness, int h_side_grid)
 {
 	const int N = h_cant_particles;
 	// Pointer(s) to the array on the device (GPU)
@@ -862,6 +869,8 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
 	cudaMemcpyToSymbol(mViscosityScalar, &h_mViscosityScalar, sizeof(float), 0, cudaMemcpyHostToDevice);
 	cudaMemcpyToSymbol(mStiffness, &h_mStiffness, sizeof(float), 0, cudaMemcpyHostToDevice);
 
+	// Lastly, the side of the grid! (I forgot it pls...)
+	cudaMemcpyToSymbol(side_grid, &h_side_grid, sizeof(float), 0, cudaMemcpyHostToDevice);
 
 	// Define grid and block dimensions for kernel execution
 	// A block is a group of threads that can cooperate.
@@ -873,8 +882,8 @@ void launchMyKernel(float* h_position, float* h_velocity, float* h_acceleration,
 
 	// Alloco la memoria del buffer (!)
 	// Calculate component sizes in bytes
-	size_t vector_bytes = 3 * threadsPerBlock * sizeof(float);
-	size_t scalar_bytes = threadsPerBlock * sizeof(float);
+	//size_t vector_bytes = 3 * threadsPerBlock * sizeof(float);
+	//size_t scalar_bytes = threadsPerBlock * sizeof(float);
 
 	/*
 
