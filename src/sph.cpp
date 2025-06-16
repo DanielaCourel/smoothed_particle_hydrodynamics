@@ -178,11 +178,19 @@ void SPH::run()
    
    */
 
+   DeviceData* devData = initDeviceData(mSrcParticles->mPosition.data(), mSrcParticles->mVelocity.data(), mSrcParticles->mAcceleration.data(),
+         mSrcParticles->mMass.data(), mSrcParticles->mDensity.data(),
+         mParticleCount, mSimulationScale, mSoftening, mGravConstant,
+         mCentralMass, mTimeStep, mCentralPos[0], mCentralPos[1], mCentralPos[2],
+         mH, mH2, mHScaled9, mKernel1Scaled, mKernel2Scaled, mKernel3Scaled,
+         mRho0, mViscosityScalar, mStiffness, mGridCellsX);
+
    while(!isStopped() && stepCount <= totalSteps)
    {
       if (!isPaused())
       {
-         step();
+         launchMyKernel(devData, mSrcParticles->mPosition.data(), mSrcParticles->mVelocity.data(), mSrcParticles->mAcceleration.data(),
+               mSrcParticles->mMass.data(), mSrcParticles->mDensity.data(), mParticleCount);
          
          /*
          outfile1 << stepCount << ", " << mKineticEnergyTotal << ", " << mPotentialEnergyTotal << ", " << mKineticEnergyTotal + mPotentialEnergyTotal << std::endl;
@@ -192,7 +200,9 @@ void SPH::run()
          stepCount++;
          //if (stepCount > 1) break;
       }
+
    }
+   cleanupDeviceData(devData);
 
    /*
    outfile1.close();
@@ -268,13 +278,10 @@ void SPH::step()
    // Kernel! (se encarga de todo...)
    // Son "std::vector<float>", asi que así pedimos los punteros a la 1ra direc de memoria
    // (También podría hacer "&vector[0]"...)
-   launchMyKernel(mSrcParticles->mPosition.data(), mSrcParticles->mVelocity.data(), mSrcParticles->mAcceleration.data(),
-         mSrcParticles->mMass.data(), mSrcParticles->mDensity.data(),
-         mParticleCount, mSimulationScale, mSoftening, mGravConstant,
-         mCentralMass, mTimeStep, mCentralPos[0], mCentralPos[1], mCentralPos[2],
-         mH, mH2, mHScaled9, mKernel1Scaled, mKernel2Scaled, mKernel3Scaled,
-         mRho0, mViscosityScalar, mStiffness, mGridCellsX);
+/*    launchMyKernel(mSrcParticles->mPosition.data(), mSrcParticles->mVelocity.data(), mSrcParticles->mAcceleration.data(),
+         mSrcParticles->mMass.data(), mSrcParticles->mDensity.data()); */
    // Ojo con la escala del grideado... (cada celda mide 2*h (!))
+
 				
 	timeIntegrate = t.nsecsElapsed() / 1000000;
 	
