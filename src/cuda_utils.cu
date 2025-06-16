@@ -62,7 +62,9 @@ int countStemp;
 
 // ------------------------------------- FUNCIÓN INCIALIZADORA -------------------------------------
 // Función que inicializa los valores para no tener que traerlos del host cada vez
-DeviceData* initDeviceData(float* h_position, float* h_velocity, float* h_acceleration,
+DeviceData* initDeviceData(float* h_position_x, float* h_position_y, float* h_position_z, 
+                    	   float* h_velocity_x, float* h_velocity_y, float* h_velocity_z,
+                    	   float* h_acceleration_x, float* h_acceleration_y, float* h_acceleration_z,
                            float* h_mass, float* h_density, int h_cant_particles,
                            float h_scale, float h_softening, float h_grav_cte,
                            float h_mass_centre, float h_delta_step,
@@ -106,22 +108,40 @@ DeviceData* initDeviceData(float* h_position, float* h_velocity, float* h_accele
 
 
 
-    size_t f_size = sizeof(float) * h_cant_particles * 3;
     size_t s_size = sizeof(float) * h_cant_particles;
     size_t i_size = sizeof(int) * h_cant_particles;
 	
 
-    CUDA_CHECK(cudaMalloc(&(devData->d_position), f_size));
-    CUDA_CHECK(cudaMalloc(&(devData->d_velocity), f_size));
-    CUDA_CHECK(cudaMalloc(&(devData->d_acceleration), f_size));
+    CUDA_CHECK(cudaMalloc(&(devData->d_pos_x), s_size));
+    CUDA_CHECK(cudaMalloc(&(devData->d_pos_y), s_size));
+    CUDA_CHECK(cudaMalloc(&(devData->d_pos_z), s_size));
+
+    CUDA_CHECK(cudaMalloc(&(devData->d_vel_x), s_size));
+    CUDA_CHECK(cudaMalloc(&(devData->d_vel_y), s_size));
+    CUDA_CHECK(cudaMalloc(&(devData->d_vel_z), s_size));
+
+    CUDA_CHECK(cudaMalloc(&(devData->d_accel_x), s_size));
+    CUDA_CHECK(cudaMalloc(&(devData->d_accel_y), s_size));
+    CUDA_CHECK(cudaMalloc(&(devData->d_accel_z), s_size));
+
+    CUDA_CHECK(cudaMemcpy(devData->d_pos_x, h_position_x, s_size, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(devData->d_pos_y, h_position_y, s_size, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(devData->d_pos_z, h_position_z, s_size, cudaMemcpyHostToDevice));
+
+    CUDA_CHECK(cudaMemcpy(devData->d_vel_x, h_velocity_x, s_size, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(devData->d_vel_y, h_velocity_y, s_size, cudaMemcpyHostToDevice)); 
+    CUDA_CHECK(cudaMemcpy(devData->d_vel_z, h_velocity_z, s_size, cudaMemcpyHostToDevice));
+
+    CUDA_CHECK(cudaMemcpy(devData->d_accel_x, h_acceleration_x, s_size, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(devData->d_accel_y, h_acceleration_y, s_size, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(devData->d_accel_z, h_acceleration_z, s_size, cudaMemcpyHostToDevice));
+
+
     CUDA_CHECK(cudaMalloc(&(devData->d_mass), s_size));
     CUDA_CHECK(cudaMalloc(&(devData->d_density), s_size));
     CUDA_CHECK(cudaMalloc(&(devData->global_index), i_size));
 	CUDA_CHECK(cudaMalloc(&(devData->d_particle_ids), i_size));
 
-    CUDA_CHECK(cudaMemcpy(devData->d_position, h_position, f_size, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(devData->d_velocity, h_velocity, f_size, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(devData->d_acceleration, h_acceleration, f_size, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(devData->d_mass, h_mass, s_size, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(devData->d_density, h_density, s_size, cudaMemcpyHostToDevice));
 
@@ -206,7 +226,7 @@ void prepare_sorted_particles(const DeviceData* devData, int h_cant_particles, i
 // --------------------------------------------------- KERNELS --------------------------------------------------------
 
 // Voxelize, and then nighbors + dens & hydro...
-__global__ void voxelize_CUDA(float* position, int num_cells, int* global_index)
+__global__ void voxelize_CUDA(float* pos_x, float* pos_y, float* pos_z, int num_cells, int* global_index)
 {
 	// Thread ID - global!
 	int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -218,9 +238,9 @@ __global__ void voxelize_CUDA(float* position, int num_cells, int* global_index)
 	//float len_box = side_grid * (2.f * h_krnl);	
 
 	// 1st, compute the grid_index of this cell:
-	int idx_x = floor(position[3*tid + 0]/cell_size);
-	int idx_y = floor(position[3*tid + 1]/cell_size);
-	int idx_z = floor(position[3*tid + 2]/cell_size);
+	int idx_x = floor(pos_x[tid]/cell_size);
+	int idx_y = floor(pos_y[tid]/cell_size);
+	int idx_z = floor(pos_z[tid]/cell_size);
 
 	if (idx_x < 0) idx_x= 0;
 	if (idx_y < 0) idx_y= 0;
@@ -235,13 +255,13 @@ __global__ void voxelize_CUDA(float* position, int num_cells, int* global_index)
 
 	global_index[tid] = cell_index;
 
-	//printf("Thread %d: x_i = %.3f; idx_x = %d; lim_cell_0 = %.3f\n", tid, position[3*tid+0], idx_x, 2.f*h_krnl);
 }
 
 
 // Neigh + densities using the voxelization:
-__global__ void neighbors_voxel_CUDA(float* position, float* mass, float* density, int* global_index,
-                                 int* d_particle_ids, int* d_sorted_cell_ids, int* d_cell_start, int step)
+__global__ void neighbors_voxel_CUDA(float* pos_x, float* pos_y, float* pos_z,
+								 	 float* mass, float* density, int* global_index,
+                                 	 int* d_particle_ids, int* d_sorted_cell_ids, int* d_cell_start, int step)
 {
 	// Thread ID - global!
 	int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -262,7 +282,7 @@ __global__ void neighbors_voxel_CUDA(float* position, float* mass, float* densit
 	int len   = end - start;
 
 	if (len <= 1) return; // no hay vecinos
-	int offset = hash(tid + step) % len;
+	int offset = hash(step) % len;
 
 	// Main loop - Cada loop toca solo la parte del array con los index prev calculated,
 	// haciéndose cargo de 1 partícula...; Quiero barrer la lista de indexes creada (!)
@@ -273,9 +293,9 @@ __global__ void neighbors_voxel_CUDA(float* position, float* mass, float* densit
 		j = d_particle_ids[j_this];
 		if (j == tid) continue;
 		
-		rMinusRjScaled[0] = (position[3*tid + 0] - position[3*j + 0]) * scale;
-		rMinusRjScaled[1] = (position[3*tid + 1] - position[3*j + 1]) * scale;
-		rMinusRjScaled[2] = (position[3*tid + 2] - position[3*j + 2]) * scale;
+		rMinusRjScaled[0] = (pos_x[tid] - pos_x[j]) * scale;
+		rMinusRjScaled[1] = (pos_y[tid] - pos_y[j]) * scale;
+		rMinusRjScaled[2] = (pos_z[tid] - pos_z[j]) * scale;
 
 		// -> Sin softening!
 		distance_ij3 = rMinusRjScaled[0] * rMinusRjScaled[0] +\
@@ -288,7 +308,7 @@ __global__ void neighbors_voxel_CUDA(float* position, float* mass, float* densit
 		rightPart = rightPart * rightPart * rightPart;
 		w = mKernel1Scaled * rightPart * (distance_ij3 < h_krnl2);  // true => 1, false => 0 (!)
 		// apply weighted neighbor mass to our density
-		density[tid] += (mass[tid] * w);  // 0. if (d^2 >= h^2)
+		density[tid] += (mass[j] * w);  // 0. if (d^2 >= h^2)
 
 		count_neighb += 1 * (distance_ij3 < h_krnl2);  // 0. if (d^2 >= h^2)
 
@@ -300,8 +320,11 @@ __global__ void neighbors_voxel_CUDA(float* position, float* mass, float* densit
 
 
 // Hydro using the voxelization (re-computo distancia, no hay con qué darle por ahora...)
-__global__ void hydro_voxel_CUDA(float* position, float* velocity, float* acceleration, float* mass, float* density, 
-								 int* global_index, int* d_particle_ids, int* d_sorted_cell_ids, int* d_cell_start, int step)
+__global__ void hydro_voxel_CUDA(float* pos_x, float* pos_y, float* pos_z,
+								 float* vel_x, float* vel_y, float* vel_z,
+								 float* accel_x, float* accel_y, float* accel_z,
+								 float* mass, float* density, int* global_index, int* d_particle_ids, 
+								 int* d_sorted_cell_ids, int* d_cell_start, int step)
 {
 	// Thread ID - global!
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -340,7 +363,7 @@ __global__ void hydro_voxel_CUDA(float* position, float* velocity, float* accele
 	int len   = end - start;
 
 	if (len <= 1) return; // no hay vecinos
-	int offset = hash(tid + step) % len;
+	int offset = hash(step) % len;
 
 	for (int i = 0; i < len; ++i) {
 		// Acceso circular con offset
@@ -353,9 +376,9 @@ __global__ void hydro_voxel_CUDA(float* position, float* velocity, float* accele
         // Nos aseguramos que sea la misma celda
         if (jeth_index != cell_id) {printf("NUNCA DEBERÍA LLEGAR ACÁ cell_id es %d y jeth_index es %d\n", cell_id, jeth_index); continue;}
 
-        rMinusRjScaled[0] = (position[3*tid + 0] - position[3*j + 0]) * scale;
-        rMinusRjScaled[1] = (position[3*tid + 1] - position[3*j + 1]) * scale;
-        rMinusRjScaled[2] = (position[3*tid + 2] - position[3*j + 2]) * scale;
+        rMinusRjScaled[0] = (pos_x[tid] - pos_x[j]) * scale;
+        rMinusRjScaled[1] = (pos_y[tid] - pos_y[j]) * scale;
+        rMinusRjScaled[2] = (pos_z[tid] - pos_z[j]) * scale;
 
         distance_ij3 = rMinusRjScaled[0]*rMinusRjScaled[0] +
                        rMinusRjScaled[1]*rMinusRjScaled[1] +
@@ -386,22 +409,24 @@ __global__ void hydro_voxel_CUDA(float* position, float* velocity, float* accele
         centerPart = (h_krnl - distance) * (distance_ij3 < h_krnl2);
         centerPart *= rhojInv * mj * mKernel3Scaled;
 
-        viscousTerm[0] += (velocity[3*j + 0] - velocity[3*tid + 0]) * centerPart * mViscosityScalar * rhoiInv;
-        viscousTerm[1] += (velocity[3*j + 1] - velocity[3*tid + 1]) * centerPart * mViscosityScalar * rhoiInv;
-        viscousTerm[2] += (velocity[3*j + 2] - velocity[3*tid + 2]) * centerPart * mViscosityScalar * rhoiInv;
+        viscousTerm[0] += (vel_x[j] - vel_x[tid]) * centerPart * mViscosityScalar * rhoiInv;
+        viscousTerm[1] += (vel_y[j] - vel_y[tid]) * centerPart * mViscosityScalar * rhoiInv;
+        viscousTerm[2] += (vel_z[j] - vel_z[tid]) * centerPart * mViscosityScalar * rhoiInv;
 
         count_neighb += (distance_ij3 < h_krnl2);
         if (count_neighb > 32) break;
     }
 
-    acceleration[3*tid + 0] = viscousTerm[0] - pressureGradient[0];
-    acceleration[3*tid + 1] = viscousTerm[1] - pressureGradient[1];
-    acceleration[3*tid + 2] = viscousTerm[2] - pressureGradient[2];
+    accel_x[tid] = viscousTerm[0] - pressureGradient[0];
+    accel_y[tid] = viscousTerm[1] - pressureGradient[1];
+    accel_z[tid] = viscousTerm[2] - pressureGradient[2];
 }
 
 
 // Lastly: grav + integration (!)
-__global__ void integrate_CUDA(float* position, float* velocity, float* acceleration)
+__global__ void integrate_CUDA(float* pos_x, float* pos_y, float* pos_z,
+								 float* vel_x, float* vel_y, float* vel_z,
+								 float* accel_x, float* accel_y, float* accel_z)
 {
 	// 1st, la 1ra parte grav que me falto desp de la hydro; desp integrate
 
@@ -415,9 +440,9 @@ __global__ void integrate_CUDA(float* position, float* velocity, float* accelera
 	if (tid >= cant_particles) return;
 
 	// Veamos la distancia al BH central (no dependo de las demás):
-	rMinusRjScaled[0] = (position[3*tid + 0] - x_centre) * scale;
-	rMinusRjScaled[1] = (position[3*tid + 1] - y_centre) * scale;
-	rMinusRjScaled[2] = (position[3*tid + 2] - z_centre) * scale;
+	rMinusRjScaled[0] = (pos_x[tid] - x_centre) * scale;
+	rMinusRjScaled[1] = (pos_y[tid] - y_centre) * scale;
+	rMinusRjScaled[2] = (pos_z[tid] - z_centre) * scale;
 
 	// Softening va squared!
 	distance_ij3 = rMinusRjScaled[0] * rMinusRjScaled[0] + rMinusRjScaled[1] * rMinusRjScaled[1] +\
@@ -428,18 +453,18 @@ __global__ void integrate_CUDA(float* position, float* velocity, float* accelera
 
 	// Updateo la gravedad:
 	// acceleration += gravityTerm;  -> Escribo mal a proposito, just to check (es +=)
-	acceleration[3*tid + 0] += -grav_cte * mass_centre * (rMinusRjScaled[0] * invDist);
-	acceleration[3*tid + 1] += -grav_cte * mass_centre * (rMinusRjScaled[1] * invDist);
-	acceleration[3*tid + 2] += -grav_cte * mass_centre * (rMinusRjScaled[2] * invDist);
+	accel_x[tid] += -grav_cte * mass_centre * (rMinusRjScaled[0] * invDist);
+	accel_y[tid] += -grav_cte * mass_centre * (rMinusRjScaled[1] * invDist);
+	accel_z[tid] += -grav_cte * mass_centre * (rMinusRjScaled[2] * invDist);
 	
 	// OJO! Me falto check for CFL condition:
-	dot = (acceleration[3*tid +0] * acceleration[3*tid +0]) + (acceleration[3*tid +1] * acceleration[3*tid +1]) +\
-		(acceleration[3*tid +2] * acceleration[3*tid +2]);
+	dot = (accel_x[tid] * accel_x[tid]) + (accel_y[tid] * accel_y[tid]) +\
+		(accel_z[tid] * accel_z[tid]);
 
 	// Lo meto a dedo... (recall branchles...)
-	acceleration[3*tid +0] *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
-	acceleration[3*tid +1] *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
-	acceleration[3*tid +2] *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
+	accel_x[tid] *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
+	accel_y[tid] *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
+	accel_z[tid] *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
 	// acc = acc if (|acc|^2 < CFL^2 => "x1"); acc = acc/|acc| * CFL if (|acc|^2 >= CFL^2)
 	
 	// ---------------------------------------------
@@ -447,18 +472,18 @@ __global__ void integrate_CUDA(float* position, float* velocity, float* accelera
 	// ---------------------------------------------
 		
 	// Only gravity (reset accel para el mid-step!)
-	velocity[3*tid + 0] += acceleration[3*tid + 0] * delta_step * 0.5f;
-	velocity[3*tid + 1] += acceleration[3*tid + 1] * delta_step * 0.5f;
-	velocity[3*tid + 2] += acceleration[3*tid + 2] * delta_step * 0.5f;
+	vel_x[tid] += accel_x[tid] * delta_step * 0.5f;
+	vel_y[tid] += accel_y[tid] * delta_step * 0.5f;
+	vel_z[tid] += accel_z[tid] * delta_step * 0.5f;
 
-	position[3*tid + 0] += velocity[3*tid + 0] * delta_step;
-	position[3*tid + 1] += velocity[3*tid + 1] * delta_step;
-	position[3*tid + 2] += velocity[3*tid + 2] * delta_step;
+	pos_x[tid] += vel_x[tid] * delta_step;
+	pos_y[tid] += vel_y[tid] * delta_step;
+	pos_z[tid] += vel_z[tid] * delta_step;
 
 	// Nuevamente calc la accel...		  
-	rMinusRjScaled[0] = (position[3*tid + 0] - x_centre) * scale;
-	rMinusRjScaled[1] = (position[3*tid + 1] - y_centre) * scale;
-	rMinusRjScaled[2] = (position[3*tid + 2] - z_centre) * scale;
+	rMinusRjScaled[0] = (pos_x[tid] - x_centre) * scale;
+	rMinusRjScaled[1] = (pos_y[tid] - y_centre) * scale;
+	rMinusRjScaled[2] = (pos_z[tid] - z_centre) * scale;
 
 	// Idem, soft^2...
 	distance_ij3 = rMinusRjScaled[0] * rMinusRjScaled[0] + rMinusRjScaled[1] * rMinusRjScaled[1] +\
@@ -468,39 +493,41 @@ __global__ void integrate_CUDA(float* position, float* velocity, float* accelera
 	invDist = invDist * invDist * invDist;  // dist^-3
 
 	// Updateo la gravedad (de 0!):
-	acceleration[3*tid + 0] = -grav_cte * mass_centre * (rMinusRjScaled[0] * invDist);
-	acceleration[3*tid + 1] = -grav_cte * mass_centre * (rMinusRjScaled[1] * invDist);
-	acceleration[3*tid + 2] = -grav_cte * mass_centre * (rMinusRjScaled[2] * invDist);
+	accel_x[tid] = -grav_cte * mass_centre * (rMinusRjScaled[0] * invDist);
+	accel_y[tid] = -grav_cte * mass_centre * (rMinusRjScaled[1] * invDist);
+	accel_z[tid] = -grav_cte * mass_centre * (rMinusRjScaled[2] * invDist);
 
 	
 	// OJO! Me falto check for CFL condition:
-	dot = (acceleration[3*tid +0] * acceleration[3*tid +0]) + (acceleration[3*tid +1] * acceleration[3*tid +1]) +\
-		(acceleration[3*tid +2] * acceleration[3*tid +2]);
+	dot = (accel_x[tid] * accel_x[tid]) + (accel_y[tid] * accel_y[tid]) +\
+		(accel_z[tid] * accel_z[tid]);
 
 	// Lo meto a dedo... (recall branchles...)
-	acceleration[3*tid +0] *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
-	acceleration[3*tid +1] *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
-	acceleration[3*tid +2] *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
+	accel_x[tid] *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
+	accel_y[tid] *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
+	accel_z[tid] *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
 
 
 	// Integro todo! LF-KDK: Only gravity
-	velocity[3*tid + 0] += acceleration[3*tid + 0] * delta_step;
-	velocity[3*tid + 1] += acceleration[3*tid + 1] * delta_step;
-	velocity[3*tid + 2] += acceleration[3*tid + 2] * delta_step;
+	vel_x[tid] += accel_x[tid] * delta_step;
+	vel_y[tid] += accel_y[tid] * delta_step;
+	vel_z[tid] += accel_z[tid] * delta_step;
 
 	// Y ya modifiqué todos los vectores!
 }
 
 //-------------------------------------- FUNCIÓN PRINCIPAL Y DESTRUCTURA -------------------------------------
 // Host-side wrapper function
-void launchMyKernel(DeviceData* devData, float* h_position, float* h_velocity, float* h_acceleration, float* h_mass, float* h_density, int h_cant_particles)
+void launchMyKernel(DeviceData* devData, float* h_position_x, float* h_position_y, float* h_position_z, 
+				    float* h_mass, float* h_density, int h_cant_particles)
 {
 	countStemp++;
     int threadsPerBlock = 256;
     int blocksPerGrid = (h_cant_particles + threadsPerBlock - 1) / threadsPerBlock;
 
     // Paso 1: voxelize
-    voxelize_CUDA<<<blocksPerGrid, threadsPerBlock>>>(devData->d_position, devData->num_cells, devData->global_index);
+    voxelize_CUDA<<<blocksPerGrid, threadsPerBlock>>>(devData->d_pos_x, devData->d_pos_y, devData->d_pos_z,
+												 devData->num_cells, devData->global_index);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     // Paso 2: ordenar y preparar estructura por celda
@@ -509,28 +536,42 @@ void launchMyKernel(DeviceData* devData, float* h_position, float* h_velocity, f
 
 
     // Paso 3: vecinos (usa ids ordenados y cell_start)
-    neighbors_voxel_CUDA<<<blocksPerGrid, threadsPerBlock>>>(devData->d_position, devData->d_mass, devData->d_density, devData->global_index,devData->sorted_data.raw_particle_ids(), thrust::raw_pointer_cast(devData->sorted_data.d_sorted_cell_ids.data()), thrust::raw_pointer_cast(devData->sorted_data.d_cell_start.data()), countStemp);
+    neighbors_voxel_CUDA<<<blocksPerGrid, threadsPerBlock>>>(devData->d_pos_x, devData->d_pos_y, devData->d_pos_z,
+												 devData->d_mass, devData->d_density, devData->global_index,devData->sorted_data.raw_particle_ids(), thrust::raw_pointer_cast(devData->sorted_data.d_sorted_cell_ids.data()), thrust::raw_pointer_cast(devData->sorted_data.d_cell_start.data()), countStemp);
 	CUDA_CHECK(cudaDeviceSynchronize());
 
 
     // Paso 4: hydro
-    hydro_voxel_CUDA<<<blocksPerGrid, threadsPerBlock>>>( devData->d_position, devData->d_velocity, devData->d_acceleration, devData->d_mass, devData->d_density, devData->global_index, devData->sorted_data.raw_particle_ids(), thrust::raw_pointer_cast(devData->sorted_data.d_sorted_cell_ids.data()), thrust::raw_pointer_cast(devData->sorted_data.d_cell_start.data()), countStemp);
+    hydro_voxel_CUDA<<<blocksPerGrid, threadsPerBlock>>>( devData->d_pos_x, devData->d_pos_y, devData->d_pos_z,
+												 devData->d_vel_x, devData->d_vel_y, devData->d_vel_z,
+												 devData->d_accel_x, devData->d_accel_y, devData->d_accel_z, 
+												 devData->d_mass, devData->d_density, devData->global_index, devData->sorted_data.raw_particle_ids(), thrust::raw_pointer_cast(devData->sorted_data.d_sorted_cell_ids.data()), thrust::raw_pointer_cast(devData->sorted_data.d_cell_start.data()), countStemp);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     // Paso 5: integración
-    integrate_CUDA<<<blocksPerGrid, threadsPerBlock>>>(devData->d_position, devData->d_velocity, devData->d_acceleration);
+    integrate_CUDA<<<blocksPerGrid, threadsPerBlock>>>(devData->d_pos_x, devData->d_pos_y, devData->d_pos_z,
+												 devData->d_vel_x, devData->d_vel_y, devData->d_vel_z,
+												 devData->d_accel_x, devData->d_accel_y, devData->d_accel_z);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     // Paso 6: copiar al host
-    CUDA_CHECK(cudaMemcpy(h_position, devData->d_position, 3 * h_cant_particles * sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_position_x, devData->d_pos_x, h_cant_particles * sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_position_y, devData->d_pos_y, h_cant_particles * sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_position_z, devData->d_pos_z, h_cant_particles * sizeof(float), cudaMemcpyDeviceToHost));
 }
 
 
 void cleanupDeviceData(DeviceData* devData) 
 {
-    cudaFree(devData->d_position);
-    cudaFree(devData->d_velocity);
-    cudaFree(devData->d_acceleration);
+    cudaFree(devData->d_pos_x);
+    cudaFree(devData->d_pos_y);
+    cudaFree(devData->d_pos_z);
+    cudaFree(devData->d_vel_x);
+    cudaFree(devData->d_vel_y);
+    cudaFree(devData->d_vel_z);
+    cudaFree(devData->d_accel_x);
+    cudaFree(devData->d_accel_y);
+    cudaFree(devData->d_accel_z);
     cudaFree(devData->d_mass);
     cudaFree(devData->d_density);
 	cudaFree(devData->global_index);

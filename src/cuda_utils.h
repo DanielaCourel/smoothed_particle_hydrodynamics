@@ -21,9 +21,9 @@ struct SortedParticlesData{
 
 // Struct para encapsular datos del dispositivo
 typedef struct {
-    float* d_position;
-    float* d_velocity;
-    float* d_acceleration;
+    float* d_pos_x; float* d_pos_y; float* d_pos_z;
+    float* d_vel_x; float* d_vel_y; float* d_vel_z;
+    float* d_accel_x; float* d_accel_y; float* d_accel_z;
     float* d_mass;
     float* d_density;
     int* global_index;
@@ -35,10 +35,12 @@ typedef struct {
 } DeviceData;
 
 // Declare host-side wrapper function(s)
-void launchMyKernel(DeviceData* devData, float* h_position, float* h_velocity, float* h_acceleration,
-				float* h_mass, float* h_density, int h_cant_particles);
+void launchMyKernel(DeviceData* devData, float* h_position_x, float* h_position_y, float* h_position_z, 
+				    float* h_mass, float* h_density, int h_cant_particles);
 
-DeviceData* initDeviceData(float* h_position, float* h_velocity, float* h_acceleration,
+DeviceData* initDeviceData(float* h_position_x, float* h_position_y, float* h_position_z, 
+                           float* h_velocity_x, float* h_velocity_y, float* h_velocity_z,
+                           float* h_acceleration_x, float* h_acceleration_y, float* h_acceleration_z,
                            float* h_mass, float* h_density, int h_cant_particles,
                            float h_scale, float h_softening, float h_grav_cte,
                            float h_mass_centre, float h_delta_step,
