@@ -58,7 +58,7 @@ __constant__ float mStiffness;
 // New cte, size of the grid (!):
 __constant__ int side_grid;
 
-int countStemp7;
+int countStemp;
 
 // ------------------------------------- FUNCIÓN INCIALIZADORA -------------------------------------
 // Función que inicializa los valores para no tener que traerlos del host cada vez
@@ -72,11 +72,17 @@ DeviceData* initDeviceData(float* h_position, float* h_velocity, float* h_accele
                            float h_mKernel3Scaled, float h_mRho0,
                            float h_mViscosityScalar, float h_mStiffness, int h_side_grid) {
 
-	countStemp7 = 0;
+	countStemp = 0;
 
     DeviceData* devData = (DeviceData*)malloc(sizeof(DeviceData));
 
 	devData->num_cells = h_side_grid * h_side_grid * h_side_grid;
+
+	// Inicializar buffers de sorted_data
+	devData->sorted_data.d_particle_ids.resize(h_cant_particles);
+	devData->sorted_data.d_sorted_cell_ids.resize(h_cant_particles);
+	devData->sorted_data.d_cell_start.resize(devData->num_cells + 1, 0);
+
 
     CUDA_CHECK(cudaMemcpyToSymbol(cant_particles, &h_cant_particles, sizeof(int), 0, cudaMemcpyHostToDevice));
 	CUDA_CHECK(cudaMemcpyToSymbol(x_centre, &h_x_centre, sizeof(float), 0, cudaMemcpyHostToDevice));
@@ -125,11 +131,15 @@ DeviceData* initDeviceData(float* h_position, float* h_velocity, float* h_accele
 
 // -------------------------- FUNCIONES AUXILIARES -------------------------------------
 
-__global__ void set_counts_from_unique_cells(
-    const int* d_temp_cells,
-    const int* d_temp_counts,
-    int* d_counts,
-    int num_unique)
+__device__ int hash(int x) 
+{
+    x = ((x >> 16) ^ x) * 0x45d9f3b;
+    x = ((x >> 16) ^ x) * 0x45d9f3b;
+    x = (x >> 16) ^ x;
+    return x;
+}
+
+__global__ void set_counts_from_unique_cells(const int* d_temp_cells, const int* d_temp_counts, int* d_counts, int num_unique)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < num_unique) {
@@ -144,8 +154,8 @@ void prepare_sorted_particles(const DeviceData* devData, int h_cant_particles, i
     thrust::device_vector<int> global_index_copy(devData->global_index, devData->global_index + h_cant_particles);
 
     // 2. Inicializar IDs de partículas
-    sortedData.d_particle_ids.resize(h_cant_particles);
-    thrust::sequence(sortedData.d_particle_ids.begin(), sortedData.d_particle_ids.end());
+	thrust::sequence(sortedData.d_particle_ids.begin(), sortedData.d_particle_ids.end());
+
 
     // 3. Ordenar por celda (sin modificar devData->global_index)
     thrust::sort_by_key(
@@ -155,7 +165,8 @@ void prepare_sorted_particles(const DeviceData* devData, int h_cant_particles, i
     );
 
     // 4. Guardar los cell_ids ya ordenados
-    sortedData.d_sorted_cell_ids = global_index_copy;
+    thrust::copy(global_index_copy.begin(), global_index_copy.end(), sortedData.d_sorted_cell_ids.begin());
+
 
     // 5. Reducir: contar partículas por celda
     thrust::device_vector<int> d_temp_counts(h_cant_particles);
@@ -182,12 +193,12 @@ void prepare_sorted_particles(const DeviceData* devData, int h_cant_particles, i
 	);
 
 	// 6. Scan
-	sortedData.d_cell_start.resize(num_cells + 1, 0);
 	thrust::exclusive_scan(
 	    d_counts.begin(),
 	    d_counts.end(),
 	    sortedData.d_cell_start.begin()
 	);
+
 }
 
 
@@ -229,9 +240,8 @@ __global__ void voxelize_CUDA(float* position, int num_cells, int* global_index)
 
 
 // Neigh + densities using the voxelization:
-__global__ void neighbors_voxel_CUDA(float* position, float* mass, float* density,
-								int* global_index,
-                                 int* d_particle_ids, int* d_sorted_cell_ids, int* d_cell_start)
+__global__ void neighbors_voxel_CUDA(float* position, float* mass, float* density, int* global_index,
+                                 int* d_particle_ids, int* d_sorted_cell_ids, int* d_cell_start, int step)
 {
 	// Thread ID - global!
 	int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -249,14 +259,18 @@ __global__ void neighbors_voxel_CUDA(float* position, float* mass, float* densit
     int start = d_cell_start[cell_id];
     int end = d_cell_start[cell_id + 1];
 
+	int len   = end - start;
+
+	if (len <= 1) return; // no hay vecinos
+	int offset = hash(tid + step) % len;
+
 	// Main loop - Cada loop toca solo la parte del array con los index prev calculated,
 	// haciéndose cargo de 1 partícula...; Quiero barrer la lista de indexes creada (!)
 	int j;
-	for (int j_this = start; j_this < end; ++j_this)
-    {
-		j = d_particle_ids[j_this];  // Por cosntruccion, (ieth_index == jeth_index)
-		// j ahora es el indice GLOBAL
-		// -> Que j =/= tid!!!
+	for (int i = 0; i < len; ++i) {
+		// Acceso circular con offset
+		int j_this = start + ((i + offset) % len);
+		j = d_particle_ids[j_this];
 		if (j == tid) continue;
 		
 		rMinusRjScaled[0] = (position[3*tid + 0] - position[3*j + 0]) * scale;
@@ -278,27 +292,16 @@ __global__ void neighbors_voxel_CUDA(float* position, float* mass, float* densit
 
 		count_neighb += 1 * (distance_ij3 < h_krnl2);  // 0. if (d^2 >= h^2)
 
-		/*
-		if (threadIdx.x == 0)
-		{
-			//printf("Thread %d: idx_x,i = %d; idx_x,j = %d\n", tid, ieth_index, global_index[j]);
-			printf("Thread %d: distance_ij = %.3f; h^2 = %.3f\n", tid, distance_ij3, h_krnl2);
-			printf("Thread %d: count_neighb = %d\n", tid, count_neighb);
-		}
-		*/
 
 		if (count_neighb > 32) break;
-
-		//if (distance_ij3 < h_krnl2) {printf("Thread %d: neighb found = %d\n", tid, count_neighb);}
 	}
 
 }
 
 
 // Hydro using the voxelization (re-computo distancia, no hay con qué darle por ahora...)
-__global__ void hydro_voxel_CUDA(float* position, float* velocity, float* acceleration,
-                                 float* mass, float* density, int* global_index,
-                                 int* d_particle_ids, int* d_sorted_cell_ids, int* d_cell_start, int* d_flag)
+__global__ void hydro_voxel_CUDA(float* position, float* velocity, float* acceleration, float* mass, float* density, 
+								 int* global_index, int* d_particle_ids, int* d_sorted_cell_ids, int* d_cell_start, int step)
 {
 	// Thread ID - global!
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -333,15 +336,22 @@ __global__ void hydro_voxel_CUDA(float* position, float* velocity, float* accele
     int start = d_cell_start[cell_id];
     int end = d_cell_start[cell_id + 1];
 
-    for (int idx = start; idx < end; ++idx)
-    {
-        int j = d_particle_ids[idx];  // índice real (global) de la partícula vecina
-        if (j == tid) continue;
+
+	int len   = end - start;
+
+	if (len <= 1) return; // no hay vecinos
+	int offset = hash(tid + step) % len;
+
+	for (int i = 0; i < len; ++i) {
+		// Acceso circular con offset
+		int j_this = start + ((i + offset) % len);
+		int j = d_particle_ids[j_this];
+		if (j == tid) continue;
 
         int jeth_index = global_index[j];  // celda de j
 
         // Nos aseguramos que sea la misma celda
-        if (jeth_index != cell_id) {printf("NUNCA DEBERÍA LLEGAR ACÁ cell_id es %d y jeth_index es %d\n", cell_id, jeth_index); atomicExch(d_flag, 1); continue;}
+        if (jeth_index != cell_id) {printf("NUNCA DEBERÍA LLEGAR ACÁ cell_id es %d y jeth_index es %d\n", cell_id, jeth_index); continue;}
 
         rMinusRjScaled[0] = (position[3*tid + 0] - position[3*j + 0]) * scale;
         rMinusRjScaled[1] = (position[3*tid + 1] - position[3*j + 1]) * scale;
@@ -485,75 +495,27 @@ __global__ void integrate_CUDA(float* position, float* velocity, float* accelera
 // Host-side wrapper function
 void launchMyKernel(DeviceData* devData, float* h_position, float* h_velocity, float* h_acceleration, float* h_mass, float* h_density, int h_cant_particles)
 {
-									int h_flag = 0;
-									int* d_flag;
-									cudaMalloc(&d_flag, sizeof(int));
-									cudaMemcpy(d_flag, &h_flag, sizeof(int), cudaMemcpyHostToDevice);
-									countStemp7++;
-				
+	countStemp++;
     int threadsPerBlock = 256;
     int blocksPerGrid = (h_cant_particles + threadsPerBlock - 1) / threadsPerBlock;
 
     // Paso 1: voxelize
     voxelize_CUDA<<<blocksPerGrid, threadsPerBlock>>>(devData->d_position, devData->num_cells, devData->global_index);
-									//cudaError_t err = cudaDeviceSynchronize();
-									//if (err != cudaSuccess) {
-									//    printf("0 CUDA error after set_counts_from_unique_cells: %s\n", cudaGetErrorString(err));
-									//    exit(1); // o assert(false);
-									//}
     CUDA_CHECK(cudaDeviceSynchronize());
 
     // Paso 2: ordenar y preparar estructura por celda
-    SortedParticlesData sortedData;
-    prepare_sorted_particles(devData, h_cant_particles, devData->num_cells, sortedData);
+    //SortedParticlesData sortedData;
+    prepare_sorted_particles(devData, h_cant_particles, devData->num_cells, devData->sorted_data);
+
 
     // Paso 3: vecinos (usa ids ordenados y cell_start)
-    neighbors_voxel_CUDA<<<blocksPerGrid, threadsPerBlock>>>(devData->d_position, devData->d_mass, devData->d_density, devData->global_index,
-															thrust::raw_pointer_cast(sortedData.d_particle_ids.data()), thrust::raw_pointer_cast(sortedData.d_sorted_cell_ids.data()), thrust::raw_pointer_cast(sortedData.d_cell_start.data()));
-									//cudaError_t err1 = cudaDeviceSynchronize();
-									//if (err1 != cudaSuccess) {
-									//    printf("1 CUDA error after set_counts_from_unique_cells: %s\n", cudaGetErrorString(err1));
-									//    exit(1); // o assert(false);
-									//}
-    CUDA_CHECK(cudaDeviceSynchronize());/* 
-									if (countStemp7 == 1793) {
-									    cudaMemcpy(h_position, devData->d_position, 3 * h_cant_particles * sizeof(float), cudaMemcpyDeviceToHost);
-										int* global_index = (int*)malloc(h_cant_particles * sizeof(int));
-									    cudaMemcpy(global_index, devData->global_index, h_cant_particles * sizeof(int), cudaMemcpyDeviceToHost);
-									    std::ofstream f("positions_step3705.dump");
-									    for (int i = 0; i < h_cant_particles; ++i) {
-											if (14030==global_index[i]){
-									        	f << h_position[3*i] << " " << h_position[3*i+1] << " " << h_position[3*i+2] << "\n";
-									        	f << global_index[i] << "\n";
-											}
-									    }										
-
-									} */
+    neighbors_voxel_CUDA<<<blocksPerGrid, threadsPerBlock>>>(devData->d_position, devData->d_mass, devData->d_density, devData->global_index,devData->sorted_data.raw_particle_ids(), thrust::raw_pointer_cast(devData->sorted_data.d_sorted_cell_ids.data()), thrust::raw_pointer_cast(devData->sorted_data.d_cell_start.data()), countStemp);
+	CUDA_CHECK(cudaDeviceSynchronize());
 
 
     // Paso 4: hydro
-    hydro_voxel_CUDA<<<blocksPerGrid, threadsPerBlock>>>(devData->d_position, devData->d_velocity, devData->d_acceleration, devData->d_mass, devData->d_density, devData->global_index,
-														   thrust::raw_pointer_cast(sortedData.d_particle_ids.data()), thrust::raw_pointer_cast(sortedData.d_sorted_cell_ids.data()), thrust::raw_pointer_cast(sortedData.d_cell_start.data()), d_flag);
-									//cudaError_t err2 = cudaDeviceSynchronize();
-									//if (err2 != cudaSuccess) {
-									//    printf("2 CUDA error after set_counts_from_unique_cells: %s, in the step: %d \n", cudaGetErrorString(err2), countStemp7);
-									//    exit(1); // o assert(false);
-									//}
-
+    hydro_voxel_CUDA<<<blocksPerGrid, threadsPerBlock>>>( devData->d_position, devData->d_velocity, devData->d_acceleration, devData->d_mass, devData->d_density, devData->global_index, devData->sorted_data.raw_particle_ids(), thrust::raw_pointer_cast(devData->sorted_data.d_sorted_cell_ids.data()), thrust::raw_pointer_cast(devData->sorted_data.d_cell_start.data()), countStemp);
     CUDA_CHECK(cudaDeviceSynchronize());
-
-									//cudaError_t err3 = cudaDeviceSynchronize();
-									//if (err3 != cudaSuccess) {
-									//    printf("3 CUDA error after set_counts_from_unique_cells: %s\n", cudaGetErrorString(err3));
-									//    exit(1); // o assert(false);
-									//}
-									cudaMemcpy(&h_flag, d_flag, sizeof(int), cudaMemcpyDeviceToHost);
-									if (h_flag == 1) {
-									    printf("Empieza a fallar en el step %d, el máxima número de celdas debería ser %d \n\n", countStemp7, devData->num_cells);
-										exit(1	);
-									}
-
-									cudaFree(d_flag);
 
     // Paso 5: integración
     integrate_CUDA<<<blocksPerGrid, threadsPerBlock>>>(devData->d_position, devData->d_velocity, devData->d_acceleration);

@@ -8,6 +8,16 @@
 #include <thrust/reduce.h>
 #include <thrust/scan.h>
 
+// Struct para almacenar arreglos uxiliares de vecinos
+struct SortedParticlesData{
+    thrust::device_vector<int> d_particle_ids;
+    thrust::device_vector<int> d_sorted_cell_ids;
+    thrust::device_vector<int> d_cell_start;
+
+    int* raw_particle_ids() { return thrust::raw_pointer_cast(d_particle_ids.data()); }
+    int* raw_cell_start()   { return thrust::raw_pointer_cast(d_cell_start.data()); }
+};
+
 
 // Struct para encapsular datos del dispositivo
 typedef struct {
@@ -20,17 +30,9 @@ typedef struct {
     int* d_particle_ids;
     int num_cells;
 
+    SortedParticlesData sorted_data;
+
 } DeviceData;
-
-// Struct para almacenar arreglos uxiliares de vecinos
-struct SortedParticlesData{
-    thrust::device_vector<int> d_particle_ids;
-    thrust::device_vector<int> d_sorted_cell_ids;
-    thrust::device_vector<int> d_cell_start;
-
-    int* raw_particle_ids() { return thrust::raw_pointer_cast(d_particle_ids.data()); }
-    int* raw_cell_start()   { return thrust::raw_pointer_cast(d_cell_start.data()); }
-};
 
 // Declare host-side wrapper function(s)
 void launchMyKernel(DeviceData* devData, float* h_position, float* h_velocity, float* h_acceleration,
