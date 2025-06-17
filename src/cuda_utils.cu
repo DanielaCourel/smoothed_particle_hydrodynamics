@@ -111,36 +111,30 @@ DeviceData* initDeviceData(float* h_position_x, float* h_position_y, float* h_po
     size_t s_size = sizeof(float) * h_cant_particles;
     size_t i_size = sizeof(int) * h_cant_particles;
 	
+	std::vector<float4> h_pos(h_cant_particles);
+	std::vector<float4> h_vel(h_cant_particles);
+	std::vector<float4> h_accel(h_cant_particles);
+	
+	for (int i = 0; i < h_cant_particles; ++i) {
+	    h_pos[i] = make_float4(h_position_x[i], h_position_y[i], h_position_z[i], 0.0f);
+	    h_vel[i] = make_float4(h_velocity_x[i], h_velocity_y[i], h_velocity_z[i], 0.0f);
+	    h_accel[i] = make_float4(h_acceleration_x[i], h_acceleration_y[i], h_acceleration_z[i], 0.0f);
+	}
 
-    CUDA_CHECK(cudaMalloc(&(devData->d_pos_x), s_size));
-    CUDA_CHECK(cudaMalloc(&(devData->d_pos_y), s_size));
-    CUDA_CHECK(cudaMalloc(&(devData->d_pos_z), s_size));
+	CUDA_CHECK(cudaMalloc(&(devData->d_pos), sizeof(float4) * h_cant_particles));
+	CUDA_CHECK(cudaMalloc(&(devData->d_vel), sizeof(float4) * h_cant_particles));
+	CUDA_CHECK(cudaMalloc(&(devData->d_accel), sizeof(float4) * h_cant_particles));
 
-    CUDA_CHECK(cudaMalloc(&(devData->d_vel_x), s_size));
-    CUDA_CHECK(cudaMalloc(&(devData->d_vel_y), s_size));
-    CUDA_CHECK(cudaMalloc(&(devData->d_vel_z), s_size));
-
-    CUDA_CHECK(cudaMalloc(&(devData->d_accel_x), s_size));
-    CUDA_CHECK(cudaMalloc(&(devData->d_accel_y), s_size));
-    CUDA_CHECK(cudaMalloc(&(devData->d_accel_z), s_size));
-
-    CUDA_CHECK(cudaMemcpy(devData->d_pos_x, h_position_x, s_size, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(devData->d_pos_y, h_position_y, s_size, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(devData->d_pos_z, h_position_z, s_size, cudaMemcpyHostToDevice));
-
-    CUDA_CHECK(cudaMemcpy(devData->d_vel_x, h_velocity_x, s_size, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(devData->d_vel_y, h_velocity_y, s_size, cudaMemcpyHostToDevice)); 
-    CUDA_CHECK(cudaMemcpy(devData->d_vel_z, h_velocity_z, s_size, cudaMemcpyHostToDevice));
-
-    CUDA_CHECK(cudaMemcpy(devData->d_accel_x, h_acceleration_x, s_size, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(devData->d_accel_y, h_acceleration_y, s_size, cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(devData->d_accel_z, h_acceleration_z, s_size, cudaMemcpyHostToDevice));
+	CUDA_CHECK(cudaMemcpy(devData->d_pos, h_pos.data(), sizeof(float4) * h_cant_particles, cudaMemcpyHostToDevice));
+	CUDA_CHECK(cudaMemcpy(devData->d_vel, h_vel.data(), sizeof(float4) * h_cant_particles, cudaMemcpyHostToDevice));
+	CUDA_CHECK(cudaMemcpy(devData->d_accel, h_accel.data(), sizeof(float4) * h_cant_particles, cudaMemcpyHostToDevice));
 
 
     CUDA_CHECK(cudaMalloc(&(devData->d_mass), s_size));
     CUDA_CHECK(cudaMalloc(&(devData->d_density), s_size));
     CUDA_CHECK(cudaMalloc(&(devData->global_index), i_size));
 	CUDA_CHECK(cudaMalloc(&(devData->d_particle_ids), i_size));
+	
 
     CUDA_CHECK(cudaMemcpy(devData->d_mass, h_mass, s_size, cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(devData->d_density, h_density, s_size, cudaMemcpyHostToDevice));
@@ -226,7 +220,7 @@ void prepare_sorted_particles(const DeviceData* devData, int h_cant_particles, i
 // --------------------------------------------------- KERNELS --------------------------------------------------------
 
 // Voxelize, and then nighbors + dens & hydro...
-__global__ void voxelize_CUDA(float* pos_x, float* pos_y, float* pos_z, int num_cells, int* global_index)
+__global__ void voxelize_CUDA(float4* pos, int num_cells, int* global_index)
 {
 	// Thread ID - global!
 	int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -238,9 +232,9 @@ __global__ void voxelize_CUDA(float* pos_x, float* pos_y, float* pos_z, int num_
 	//float len_box = side_grid * (2.f * h_krnl);	
 
 	// 1st, compute the grid_index of this cell:
-	int idx_x = floor(pos_x[tid]/cell_size);
-	int idx_y = floor(pos_y[tid]/cell_size);
-	int idx_z = floor(pos_z[tid]/cell_size);
+	int idx_x = floor(pos[tid].x/cell_size);
+	int idx_y = floor(pos[tid].y/cell_size);
+	int idx_z = floor(pos[tid].z/cell_size);
 
 	if (idx_x < 0) idx_x= 0;
 	if (idx_y < 0) idx_y= 0;
@@ -259,174 +253,140 @@ __global__ void voxelize_CUDA(float* pos_x, float* pos_y, float* pos_z, int num_
 
 
 // Neigh + densities using the voxelization:
-__global__ void neighbors_voxel_CUDA(float* pos_x, float* pos_y, float* pos_z,
-								 	 float* mass, float* density, int* global_index,
-                                 	 int* d_particle_ids, int* d_sorted_cell_ids, int* d_cell_start, int step)
+__global__ void neighbors_voxel_CUDA(float4* pos, float* mass, float* density,
+                                     int* global_index, int* d_particle_ids,
+                                     int* d_sorted_cell_ids, int* d_cell_start, int step)
 {
-	// Thread ID - global!
 	int tid = blockIdx.x * blockDim.x + threadIdx.x;
-
 	if (tid >= cant_particles) return;
 
-	// vars def thread-wise.
-	float distance_ij3, rightPart, w;
-	float rMinusRjScaled[3];
-	// Init
+	float4 pos_i = __ldg(&pos[tid]);
+	int cell_id = global_index[tid];
+
+	int start = d_cell_start[cell_id];
+	int end   = d_cell_start[cell_id + 1];
+	int len   = end - start;
+
+	if (len <= 1) return;
+
+	int offset = hash(step) % len;
+
+	float dens = 0.0f;
 	int count_neighb = 0;
-	density[tid] = 0.f;
-
-    int cell_id = global_index[tid];
-    int start = d_cell_start[cell_id];
-    int end = d_cell_start[cell_id + 1];
-
-	int len   = end - start;
-
-	if (len <= 1) return; // no hay vecinos
-	int offset = hash(step) % len;
-
-	// Main loop - Cada loop toca solo la parte del array con los index prev calculated,
-	// haciéndose cargo de 1 partícula...; Quiero barrer la lista de indexes creada (!)
-	int j;
-	for (int i = 0; i < len; ++i) {
-		// Acceso circular con offset
-		int j_this = start + ((i + offset) % len);
-		j = d_particle_ids[j_this];
-		if (j == tid) continue;
-		
-		rMinusRjScaled[0] = (pos_x[tid] - pos_x[j]) * scale;
-		rMinusRjScaled[1] = (pos_y[tid] - pos_y[j]) * scale;
-		rMinusRjScaled[2] = (pos_z[tid] - pos_z[j]) * scale;
-
-		// -> Sin softening!
-		distance_ij3 = rMinusRjScaled[0] * rMinusRjScaled[0] +\
-						rMinusRjScaled[1] * rMinusRjScaled[1] +\
-						rMinusRjScaled[2] * rMinusRjScaled[2];  // This is SQUARED
-
-		// From this, I can (branchless-ly) compute hydro properties (!)
-		// Density:
-		rightPart = h_krnl2 - distance_ij3;
-		rightPart = rightPart * rightPart * rightPart;
-		w = mKernel1Scaled * rightPart * (distance_ij3 < h_krnl2);  // true => 1, false => 0 (!)
-		// apply weighted neighbor mass to our density
-		density[tid] += (mass[j] * w);  // 0. if (d^2 >= h^2)
-
-		count_neighb += 1 * (distance_ij3 < h_krnl2);  // 0. if (d^2 >= h^2)
-
-
-		if (count_neighb > 32) break;
-	}
-
-}
-
-
-// Hydro using the voxelization (re-computo distancia, no hay con qué darle por ahora...)
-__global__ void hydro_voxel_CUDA(float* pos_x, float* pos_y, float* pos_z,
-								 float* vel_x, float* vel_y, float* vel_z,
-								 float* accel_x, float* accel_y, float* accel_z,
-								 float* mass, float* density, int* global_index, int* d_particle_ids, 
-								 int* d_sorted_cell_ids, int* d_cell_start, int step)
-{
-	// Thread ID - global!
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-
-    if (tid >= cant_particles) return;
-
-	// vars def thread-wise.
-    float distance_ij3, distance, invDist;
-    float pi, rhoiInv, rhoiInv2, piDivRhoi2;
-    float centerPart, mj, pj, rhojInv, rhojInv2;
-    float rMinusRjScaled[3];
-
-    // Presión y masa propia
-	pi = (density[tid] - mRho0) * mStiffness;  // One-liner...
-	rhoiInv = ((pi > 0.0f) ? (1.0f / pi) : 1.0f);  // Better?
-	rhoiInv2 = rhoiInv * rhoiInv;
-	piDivRhoi2 = pi * rhoiInv2;
-
-	// Pressure gradient
-	float pressureGradient[3] = {0.0f, 0.0f, 0.0f};
-	float pressureGradientContribution[3];
-	// Viscous term
-	float viscousTerm[3] = {0.0f, 0.0f, 0.0f};
-
-	// A pseudo-softening:
-	float pseudo_soft = 1e-3f;
-
-    int count_neighb = 0;
-
-    // Obtener celda y vecinos
-    int cell_id = global_index[tid];
-    int start = d_cell_start[cell_id];
-    int end = d_cell_start[cell_id + 1];
-
-
-	int len   = end - start;
-
-	if (len <= 1) return; // no hay vecinos
-	int offset = hash(step) % len;
 
 	for (int i = 0; i < len; ++i) {
-		// Acceso circular con offset
 		int j_this = start + ((i + offset) % len);
 		int j = d_particle_ids[j_this];
 		if (j == tid) continue;
 
-        int jeth_index = global_index[j];  // celda de j
+		float4 pos_j = __ldg(&pos[j]);
 
-        // Nos aseguramos que sea la misma celda
-        if (jeth_index != cell_id) {printf("NUNCA DEBERÍA LLEGAR ACÁ cell_id es %d y jeth_index es %d\n", cell_id, jeth_index); continue;}
+		float dx = (pos_i.x - pos_j.x) * scale;
+		float dy = (pos_i.y - pos_j.y) * scale;
+		float dz = (pos_i.z - pos_j.z) * scale;
 
-        rMinusRjScaled[0] = (pos_x[tid] - pos_x[j]) * scale;
-        rMinusRjScaled[1] = (pos_y[tid] - pos_y[j]) * scale;
-        rMinusRjScaled[2] = (pos_z[tid] - pos_z[j]) * scale;
+		float dist2 = dx*dx + dy*dy + dz*dz;
 
-        distance_ij3 = rMinusRjScaled[0]*rMinusRjScaled[0] +
-                       rMinusRjScaled[1]*rMinusRjScaled[1] +
-                       rMinusRjScaled[2]*rMinusRjScaled[2];
+		if (dist2 >= h_krnl2) continue;
 
-        distance = sqrtf(distance_ij3);
-        invDist = 1.f / (distance + pseudo_soft);
+		float diff = h_krnl2 - dist2;
+		float w = mKernel1Scaled * diff * diff * diff;
 
-        // Presión del vecino
-        mj = mass[j];
-        pj = (density[j] - mRho0) * mStiffness;
-        rhojInv = (density[j] > 0.0f) ? (1.0f / density[j]) : 1.0f;
-        rhojInv2 = rhojInv * rhojInv;
+		dens += __ldg(&mass[j]) * w;
 
-        // Gradiente de presión
-        centerPart = (h_krnl - distance) * (distance_ij3 < h_krnl2);
-        centerPart *= centerPart * mj * piDivRhoi2 * pj * rhojInv2;
+		if (++count_neighb > 32) break;
+	}
 
-        pressureGradientContribution[0] = mKernel2Scaled * rMinusRjScaled[0] * invDist;
-        pressureGradientContribution[1] = mKernel2Scaled * rMinusRjScaled[1] * invDist;
-        pressureGradientContribution[2] = mKernel2Scaled * rMinusRjScaled[2] * invDist;
-
-        pressureGradient[0] += pressureGradientContribution[0] * centerPart;
-        pressureGradient[1] += pressureGradientContribution[1] * centerPart;
-        pressureGradient[2] += pressureGradientContribution[2] * centerPart;
-
-        // Viscosidad
-        centerPart = (h_krnl - distance) * (distance_ij3 < h_krnl2);
-        centerPart *= rhojInv * mj * mKernel3Scaled;
-
-        viscousTerm[0] += (vel_x[j] - vel_x[tid]) * centerPart * mViscosityScalar * rhoiInv;
-        viscousTerm[1] += (vel_y[j] - vel_y[tid]) * centerPart * mViscosityScalar * rhoiInv;
-        viscousTerm[2] += (vel_z[j] - vel_z[tid]) * centerPart * mViscosityScalar * rhoiInv;
-
-        count_neighb += (distance_ij3 < h_krnl2);
-        if (count_neighb > 32) break;
-    }
-
-    accel_x[tid] = viscousTerm[0] - pressureGradient[0];
-    accel_y[tid] = viscousTerm[1] - pressureGradient[1];
-    accel_z[tid] = viscousTerm[2] - pressureGradient[2];
+	density[tid] = dens;
 }
 
 
+// Hydro using the voxelization (re-computo distancia, no hay con qué darle por ahora...)
+__global__ void hydro_voxel_CUDA(float4* pos, float4* vel, float4* accel,
+                                 float* mass, float* density, int* global_index,
+                                 int* d_particle_ids, int* d_sorted_cell_ids,
+                                 int* d_cell_start, int step)
+{
+    int tid_global = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid_global >= cant_particles) return;
+
+    int tid = d_particle_ids[tid_global];
+
+    // Datos de la partícula actual
+    float4 pos_i = __ldg(&pos[tid]);
+    float4 vel_i = __ldg(&vel[tid]);
+    float rhoi = __ldg(&density[tid]);
+    float pi = (rhoi - mRho0) * mStiffness;
+    float rhoiInv = (pi > 0.0f) ? (1.0f / pi) : 1.0f;
+    float rhoiInv2 = rhoiInv * rhoiInv;
+    float piDivRhoi2 = pi * rhoiInv2;
+
+    // Acumuladores
+    float pressureGradX = 0.0f, pressureGradY = 0.0f, pressureGradZ = 0.0f;
+    float viscousX = 0.0f, viscousY = 0.0f, viscousZ = 0.0f;
+    float pseudo_soft = 1e-3f;
+
+    int count_neighb = 0;
+
+    // Acceso a vecinos
+    int cell_id = global_index[tid];
+    int start = d_cell_start[cell_id];
+    int end = d_cell_start[cell_id + 1];
+    int len = end - start;
+    if (len <= 1) return;
+
+    int offset = hash(step) % len;
+
+    for (int i = 0; i < len; ++i) {
+        int j_this = start + ((i + offset) % len);
+        int j = d_particle_ids[j_this];
+        if (j == tid) continue;
+
+        float4 pos_j = __ldg(&pos[j]);
+        float dx = (pos_i.x - pos_j.x) * scale;
+        float dy = (pos_i.y - pos_j.y) * scale;
+        float dz = (pos_i.z - pos_j.z) * scale;
+
+        float dist2 = dx*dx + dy*dy + dz*dz;
+        if (dist2 >= h_krnl2) continue;
+
+        float invDist = rsqrtf(dist2 + pseudo_soft);
+        float dist = 1.0f / invDist;
+
+        float mj = __ldg(&mass[j]);
+        float rhoj = __ldg(&density[j]);
+        float pj = (rhoj - mRho0) * mStiffness;
+        float rhojInv = (rhoj > 0.0f) ? (1.0f / rhoj) : 1.0f;
+        float rhojInv2 = rhojInv * rhojInv;
+
+        // Gradiente de presión
+        float w = (h_krnl - dist);
+        float factor = w * w * mj * piDivRhoi2 * pj * rhojInv2 * mKernel2Scaled * invDist;
+
+        pressureGradX += dx * factor;
+        pressureGradY += dy * factor;
+        pressureGradZ += dz * factor;
+
+        // Viscosidad
+        float visc = w * rhojInv * mj * mKernel3Scaled * mViscosityScalar * rhoiInv;
+        float4 vel_j = __ldg(&vel[j]);
+
+        viscousX += (vel_j.x - vel_i.x) * visc;
+        viscousY += (vel_j.y - vel_i.y) * visc;
+        viscousZ += (vel_j.z - vel_i.z) * visc;
+
+		if (++count_neighb > 32) break;
+    }
+
+    accel[tid].x = viscousX - pressureGradX;
+    accel[tid].y = viscousY - pressureGradY;
+    accel[tid].z = viscousZ - pressureGradZ;
+}
+
+
+
 // Lastly: grav + integration (!)
-__global__ void integrate_CUDA(float* pos_x, float* pos_y, float* pos_z,
-								 float* vel_x, float* vel_y, float* vel_z,
-								 float* accel_x, float* accel_y, float* accel_z)
+__global__ void integrate_CUDA(float4* pos, float4* vel, float4* accel)
 {
 	// 1st, la 1ra parte grav que me falto desp de la hydro; desp integrate
 
@@ -440,9 +400,9 @@ __global__ void integrate_CUDA(float* pos_x, float* pos_y, float* pos_z,
 	if (tid >= cant_particles) return;
 
 	// Veamos la distancia al BH central (no dependo de las demás):
-	rMinusRjScaled[0] = (pos_x[tid] - x_centre) * scale;
-	rMinusRjScaled[1] = (pos_y[tid] - y_centre) * scale;
-	rMinusRjScaled[2] = (pos_z[tid] - z_centre) * scale;
+	rMinusRjScaled[0] = (pos[tid].x - x_centre) * scale;
+	rMinusRjScaled[1] = (pos[tid].y - y_centre) * scale;
+	rMinusRjScaled[2] = (pos[tid].z - z_centre) * scale;
 
 	// Softening va squared!
 	distance_ij3 = rMinusRjScaled[0] * rMinusRjScaled[0] + rMinusRjScaled[1] * rMinusRjScaled[1] +\
@@ -453,18 +413,18 @@ __global__ void integrate_CUDA(float* pos_x, float* pos_y, float* pos_z,
 
 	// Updateo la gravedad:
 	// acceleration += gravityTerm;  -> Escribo mal a proposito, just to check (es +=)
-	accel_x[tid] += -grav_cte * mass_centre * (rMinusRjScaled[0] * invDist);
-	accel_y[tid] += -grav_cte * mass_centre * (rMinusRjScaled[1] * invDist);
-	accel_z[tid] += -grav_cte * mass_centre * (rMinusRjScaled[2] * invDist);
+	accel[tid].x += -grav_cte * mass_centre * (rMinusRjScaled[0] * invDist);
+	accel[tid].y += -grav_cte * mass_centre * (rMinusRjScaled[1] * invDist);
+	accel[tid].z += -grav_cte * mass_centre * (rMinusRjScaled[2] * invDist);
 	
 	// OJO! Me falto check for CFL condition:
-	dot = (accel_x[tid] * accel_x[tid]) + (accel_y[tid] * accel_y[tid]) +\
-		(accel_z[tid] * accel_z[tid]);
+	dot = (accel[tid].x * accel[tid].x) + (accel[tid].y * accel[tid].y) +\
+		(accel[tid].z * accel[tid].z);
 
 	// Lo meto a dedo... (recall branchles...)
-	accel_x[tid] *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
-	accel_y[tid] *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
-	accel_z[tid] *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
+	accel[tid].x *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
+	accel[tid].y *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
+	accel[tid].z *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
 	// acc = acc if (|acc|^2 < CFL^2 => "x1"); acc = acc/|acc| * CFL if (|acc|^2 >= CFL^2)
 	
 	// ---------------------------------------------
@@ -472,18 +432,18 @@ __global__ void integrate_CUDA(float* pos_x, float* pos_y, float* pos_z,
 	// ---------------------------------------------
 		
 	// Only gravity (reset accel para el mid-step!)
-	vel_x[tid] += accel_x[tid] * delta_step * 0.5f;
-	vel_y[tid] += accel_y[tid] * delta_step * 0.5f;
-	vel_z[tid] += accel_z[tid] * delta_step * 0.5f;
+	vel[tid].x += accel[tid].x * delta_step * 0.5f;
+	vel[tid].y += accel[tid].y * delta_step * 0.5f;
+	vel[tid].z += accel[tid].z * delta_step * 0.5f;
 
-	pos_x[tid] += vel_x[tid] * delta_step;
-	pos_y[tid] += vel_y[tid] * delta_step;
-	pos_z[tid] += vel_z[tid] * delta_step;
+	pos[tid].x += vel[tid].x * delta_step;
+	pos[tid].y += vel[tid].y * delta_step;
+	pos[tid].z += vel[tid].z * delta_step;
 
 	// Nuevamente calc la accel...		  
-	rMinusRjScaled[0] = (pos_x[tid] - x_centre) * scale;
-	rMinusRjScaled[1] = (pos_y[tid] - y_centre) * scale;
-	rMinusRjScaled[2] = (pos_z[tid] - z_centre) * scale;
+	rMinusRjScaled[0] = (pos[tid].x - x_centre) * scale;
+	rMinusRjScaled[1] = (pos[tid].y - y_centre) * scale;
+	rMinusRjScaled[2] = (pos[tid].z - z_centre) * scale;
 
 	// Idem, soft^2...
 	distance_ij3 = rMinusRjScaled[0] * rMinusRjScaled[0] + rMinusRjScaled[1] * rMinusRjScaled[1] +\
@@ -493,25 +453,25 @@ __global__ void integrate_CUDA(float* pos_x, float* pos_y, float* pos_z,
 	invDist = invDist * invDist * invDist;  // dist^-3
 
 	// Updateo la gravedad (de 0!):
-	accel_x[tid] = -grav_cte * mass_centre * (rMinusRjScaled[0] * invDist);
-	accel_y[tid] = -grav_cte * mass_centre * (rMinusRjScaled[1] * invDist);
-	accel_z[tid] = -grav_cte * mass_centre * (rMinusRjScaled[2] * invDist);
+	accel[tid].x = -grav_cte * mass_centre * (rMinusRjScaled[0] * invDist);
+	accel[tid].y = -grav_cte * mass_centre * (rMinusRjScaled[1] * invDist);
+	accel[tid].z = -grav_cte * mass_centre * (rMinusRjScaled[2] * invDist);
 
 	
 	// OJO! Me falto check for CFL condition:
-	dot = (accel_x[tid] * accel_x[tid]) + (accel_y[tid] * accel_y[tid]) +\
-		(accel_z[tid] * accel_z[tid]);
+	dot = (accel[tid].x * accel[tid].x) + (accel[tid].y * accel[tid].y) +\
+		(accel[tid].z * accel[tid].z);
 
 	// Lo meto a dedo... (recall branchles...)
-	accel_x[tid] *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
-	accel_y[tid] *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
-	accel_z[tid] *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
+	accel[tid].x *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
+	accel[tid].y *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
+	accel[tid].z *= (1.f * (dot < 1e+8f) + (1e+4f * rsqrtf(dot) * (dot >= 1e+8f)));
 
 
 	// Integro todo! LF-KDK: Only gravity
-	vel_x[tid] += accel_x[tid] * delta_step;
-	vel_y[tid] += accel_y[tid] * delta_step;
-	vel_z[tid] += accel_z[tid] * delta_step;
+	vel[tid].x += accel[tid].x * delta_step;
+	vel[tid].y += accel[tid].y * delta_step;
+	vel[tid].z += accel[tid].z * delta_step;
 
 	// Y ya modifiqué todos los vectores!
 }
@@ -522,12 +482,11 @@ void launchMyKernel(DeviceData* devData, float* h_position_x, float* h_position_
 				    float* h_mass, float* h_density, int h_cant_particles)
 {
 	countStemp++;
-    int threadsPerBlock = 256;
+    int threadsPerBlock = 512;
     int blocksPerGrid = (h_cant_particles + threadsPerBlock - 1) / threadsPerBlock;
 
     // Paso 1: voxelize
-    voxelize_CUDA<<<blocksPerGrid, threadsPerBlock>>>(devData->d_pos_x, devData->d_pos_y, devData->d_pos_z,
-												 devData->num_cells, devData->global_index);
+    voxelize_CUDA<<<blocksPerGrid, threadsPerBlock>>>(devData->d_pos, devData->num_cells, devData->global_index);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     // Paso 2: ordenar y preparar estructura por celda
@@ -536,42 +495,42 @@ void launchMyKernel(DeviceData* devData, float* h_position_x, float* h_position_
 
 
     // Paso 3: vecinos (usa ids ordenados y cell_start)
-    neighbors_voxel_CUDA<<<blocksPerGrid, threadsPerBlock>>>(devData->d_pos_x, devData->d_pos_y, devData->d_pos_z,
-												 devData->d_mass, devData->d_density, devData->global_index,devData->sorted_data.raw_particle_ids(), thrust::raw_pointer_cast(devData->sorted_data.d_sorted_cell_ids.data()), thrust::raw_pointer_cast(devData->sorted_data.d_cell_start.data()), countStemp);
+    neighbors_voxel_CUDA<<<blocksPerGrid, threadsPerBlock>>>(devData->d_pos, devData->d_mass, devData->d_density, devData->global_index,devData->sorted_data.raw_particle_ids(), thrust::raw_pointer_cast(devData->sorted_data.d_sorted_cell_ids.data()), thrust::raw_pointer_cast(devData->sorted_data.d_cell_start.data()), countStemp);
 	CUDA_CHECK(cudaDeviceSynchronize());
 
 
     // Paso 4: hydro
-    hydro_voxel_CUDA<<<blocksPerGrid, threadsPerBlock>>>( devData->d_pos_x, devData->d_pos_y, devData->d_pos_z,
-												 devData->d_vel_x, devData->d_vel_y, devData->d_vel_z,
-												 devData->d_accel_x, devData->d_accel_y, devData->d_accel_z, 
+    hydro_voxel_CUDA<<<blocksPerGrid, threadsPerBlock>>>( devData->d_pos, devData->d_vel, devData->d_accel, 
 												 devData->d_mass, devData->d_density, devData->global_index, devData->sorted_data.raw_particle_ids(), thrust::raw_pointer_cast(devData->sorted_data.d_sorted_cell_ids.data()), thrust::raw_pointer_cast(devData->sorted_data.d_cell_start.data()), countStemp);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     // Paso 5: integración
-    integrate_CUDA<<<blocksPerGrid, threadsPerBlock>>>(devData->d_pos_x, devData->d_pos_y, devData->d_pos_z,
-												 devData->d_vel_x, devData->d_vel_y, devData->d_vel_z,
-												 devData->d_accel_x, devData->d_accel_y, devData->d_accel_z);
+    integrate_CUDA<<<blocksPerGrid, threadsPerBlock>>>(devData->d_pos, devData->d_vel, devData->d_accel);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     // Paso 6: copiar al host
-    CUDA_CHECK(cudaMemcpy(h_position_x, devData->d_pos_x, h_cant_particles * sizeof(float), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(h_position_y, devData->d_pos_y, h_cant_particles * sizeof(float), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaMemcpy(h_position_z, devData->d_pos_z, h_cant_particles * sizeof(float), cudaMemcpyDeviceToHost));
+
+	if (countStemp % 2 == 0) {
+		float4* h_pos = (float4*)malloc(sizeof(float4) * h_cant_particles);
+		cudaMemcpy(h_pos, devData->d_pos, sizeof(float4) * h_cant_particles, cudaMemcpyDeviceToHost);
+
+		// Separar en componentes si necesitás
+		for (int i = 0; i < h_cant_particles; ++i) {
+			h_position_x[i] = h_pos[i].x;
+			h_position_y[i] = h_pos[i].y;
+			h_position_z[i] = h_pos[i].z;
+		}
+
+		free(h_pos);
+	}
 }
 
 
 void cleanupDeviceData(DeviceData* devData) 
 {
-    cudaFree(devData->d_pos_x);
-    cudaFree(devData->d_pos_y);
-    cudaFree(devData->d_pos_z);
-    cudaFree(devData->d_vel_x);
-    cudaFree(devData->d_vel_y);
-    cudaFree(devData->d_vel_z);
-    cudaFree(devData->d_accel_x);
-    cudaFree(devData->d_accel_y);
-    cudaFree(devData->d_accel_z);
+    cudaFree(devData->d_pos);
+    cudaFree(devData->d_vel);
+    cudaFree(devData->d_accel);
     cudaFree(devData->d_mass);
     cudaFree(devData->d_density);
 	cudaFree(devData->global_index);

@@ -21,9 +21,9 @@ struct SortedParticlesData{
 
 // Struct para encapsular datos del dispositivo
 typedef struct {
-    float* d_pos_x; float* d_pos_y; float* d_pos_z;
-    float* d_vel_x; float* d_vel_y; float* d_vel_z;
-    float* d_accel_x; float* d_accel_y; float* d_accel_z;
+    __align__(16) float4* d_pos;
+    __align__(16) float4* d_vel;
+    __align__(16) float4* d_accel;
     float* d_mass;
     float* d_density;
     int* global_index;
