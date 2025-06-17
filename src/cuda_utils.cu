@@ -492,7 +492,7 @@ void launchMyKernel(DeviceData* devData, float* h_position, float* h_velocity, f
 									cudaMemcpy(d_flag, &h_flag, sizeof(int), cudaMemcpyHostToDevice);
 									countStemp7++;
 				
-    int threadsPerBlock = 1024;
+    int threadsPerBlock = 256;  // fiducial = 256
     int blocksPerGrid = (h_cant_particles + threadsPerBlock - 1) / threadsPerBlock;
 
     for (int step=0; step<1000; step++) {
