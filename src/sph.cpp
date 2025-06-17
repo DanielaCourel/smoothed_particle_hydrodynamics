@@ -30,7 +30,7 @@
 #include "cuda_utils.h" // Include the header for CUDA wrapper functions
 
 #ifndef M
-#define M 32
+#define M 512
 #endif
 #define K 8
 
@@ -70,7 +70,7 @@ SPH::SPH()
    mMaxZ = mCellSize * mGridCellsZ;
 
    float time_simu = 1.0f;  // [Myr]
-   mTimeStep = 1e-4f;
+   mTimeStep = 1e-3f;
    totalSteps = (int)round(time_simu/mTimeStep);
 
    // physics
@@ -185,11 +185,13 @@ void SPH::run()
          mH, mH2, mHScaled9, mKernel1Scaled, mKernel2Scaled, mKernel3Scaled,
          mRho0, mViscosityScalar, mStiffness, mGridCellsX);
 
-   while(!isStopped() && stepCount <= totalSteps)
-   {
-      if (!isPaused())
-      {
-         launchMyKernel(devData, mSrcParticles->mPosition.data(), mSrcParticles->mVelocity.data(), mSrcParticles->mAcceleration.data(),
+   //while(!isStopped() && stepCount <= totalSteps)
+   //{
+   //   if (!isPaused())
+   //   {
+
+   // Hace 1000 steps
+   launchMyKernel(devData, mSrcParticles->mPosition.data(), mSrcParticles->mVelocity.data(), mSrcParticles->mAcceleration.data(),
                mSrcParticles->mMass.data(), mSrcParticles->mDensity.data(), mParticleCount);
          
          /*
@@ -197,11 +199,11 @@ void SPH::run()
          outfile2 << stepCount << ", " << mAngularMomentumTotal.length() << std::endl;
          outfile3 << stepCount << ", " << timeVoxelize << ", " << timeFindNeighbors << ", " << timeComputeDensity << ", " << timeComputePressure << ", " << timeComputeAcceleration << ", " << timeIntegrate << std::endl;
          */
-         stepCount++;
+         //stepCount++;
          //if (stepCount > 1) break;
-      }
+      //}
 
-   }
+   //}
    cleanupDeviceData(devData);
 
    /*

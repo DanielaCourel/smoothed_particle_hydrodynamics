@@ -483,6 +483,7 @@ __global__ void integrate_CUDA(float* position, float* velocity, float* accelera
 
 //-------------------------------------- FUNCIÓN PRINCIPAL Y DESTRUCTURA -------------------------------------
 // Host-side wrapper function
+// (Hace 1000 steps, sin ir y volver...)
 void launchMyKernel(DeviceData* devData, float* h_position, float* h_velocity, float* h_acceleration, float* h_mass, float* h_density, int h_cant_particles)
 {
 									int h_flag = 0;
@@ -491,8 +492,10 @@ void launchMyKernel(DeviceData* devData, float* h_position, float* h_velocity, f
 									cudaMemcpy(d_flag, &h_flag, sizeof(int), cudaMemcpyHostToDevice);
 									countStemp7++;
 				
-    int threadsPerBlock = 256;
+    int threadsPerBlock = 1024;
     int blocksPerGrid = (h_cant_particles + threadsPerBlock - 1) / threadsPerBlock;
+
+    for (int step=0; step<1000; step++) {
 
     // Paso 1: voxelize
     voxelize_CUDA<<<blocksPerGrid, threadsPerBlock>>>(devData->d_position, devData->num_cells, devData->global_index);
@@ -558,6 +561,8 @@ void launchMyKernel(DeviceData* devData, float* h_position, float* h_velocity, f
     // Paso 5: integración
     integrate_CUDA<<<blocksPerGrid, threadsPerBlock>>>(devData->d_position, devData->d_velocity, devData->d_acceleration);
     CUDA_CHECK(cudaDeviceSynchronize());
+
+    }  // End itengration
 
     // Paso 6: copiar al host
     CUDA_CHECK(cudaMemcpy(h_position, devData->d_position, 3 * h_cant_particles * sizeof(float), cudaMemcpyDeviceToHost));
